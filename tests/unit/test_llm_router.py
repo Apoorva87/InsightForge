@@ -6,6 +6,8 @@ import pytest
 
 from insightforge.llm.base import LLMProviderError, LLMRequest, LLMResponse
 from insightforge.llm.router import LLMRouter
+from insightforge.models.video import VideoJob
+from insightforge.pipeline import _apply_job_overrides
 from tests.conftest import MockLLMProvider
 
 
@@ -53,6 +55,16 @@ class TestLLMRouter:
         assert router.mode == "local"
         assert len(router.providers) >= 1
 
+    def test_from_config_local_ollama_first_lmstudio_second(self, sample_config):
+        """Ollama must be the primary provider; LMStudio is fallback."""
+        sample_config["llm"]["lmstudio"] = {
+            "base_url": "http://localhost:1234/v1",
+            "model": "local-model",
+        }
+        router = LLMRouter.from_config(sample_config)
+        names = [p.name for p in router.providers]
+        assert names == ["ollama", "lmstudio"]
+
     def test_from_config_api_mode(self, sample_config):
         import os
         sample_config["llm"]["mode"] = "api"
@@ -60,3 +72,31 @@ class TestLLMRouter:
             mp.setenv("ANTHROPIC_API_KEY", "sk-test-key")
             router = LLMRouter.from_config(sample_config)
         assert router.mode == "api"
+
+
+class TestJobOverrides:
+    def test_cli_mode_override_wins_over_config(self, sample_config):
+        job = VideoJob(url="https://youtube.com/watch?v=test", mode="api")
+        merged = _apply_job_overrides(sample_config, job)
+        assert merged["llm"]["mode"] == "api"
+
+    def test_cli_model_override_updates_local_providers(self, sample_config):
+        sample_config["llm"]["lmstudio"] = {"base_url": "http://localhost:1234/v1", "model": "old"}
+        job = VideoJob(
+            url="https://youtube.com/watch?v=test",
+            mode="local",
+            model_override="new-model",
+        )
+        merged = _apply_job_overrides(sample_config, job)
+        assert merged["llm"]["ollama"]["model"] == "new-model"
+        assert merged["llm"]["lmstudio"]["model"] == "new-model"
+
+    def test_cli_model_override_updates_api_provider(self, sample_config):
+        sample_config["llm"]["anthropic"] = {"model": "old-api-model"}
+        job = VideoJob(
+            url="https://youtube.com/watch?v=test",
+            mode="api",
+            model_override="new-api-model",
+        )
+        merged = _apply_job_overrides(sample_config, job)
+        assert merged["llm"]["anthropic"]["model"] == "new-api-model"

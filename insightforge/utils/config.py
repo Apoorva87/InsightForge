@@ -63,6 +63,15 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     if url := os.environ.get("LMSTUDIO_BASE_URL"):
         config.setdefault("llm", {}).setdefault("lmstudio", {})["base_url"] = url
 
+    # Frame reranking strategy
+    if rerank := os.environ.get("INSIGHTFORGE_FRAME_RERANK"):
+        rerank = rerank.lower().strip()
+        frames_cfg = config.setdefault("frames", {})
+        if rerank in {"heuristic", "off", "disabled"}:
+            frames_cfg["vlm_rerank_enabled"] = False
+        elif rerank in {"vlm", "vision", "enabled"}:
+            frames_cfg["vlm_rerank_enabled"] = True
+
     # Output dir
     if out := os.environ.get("INSIGHTFORGE_OUTPUT_DIR"):
         config.setdefault("output", {})["base_dir"] = out

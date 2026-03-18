@@ -46,7 +46,7 @@ class LLMRouter:
             providers.append(
                 OllamaProvider(
                     base_url=ollama_cfg.get("base_url", "http://localhost:11434"),
-                    model=ollama_cfg.get("model", "llama3.2"),
+                    model=ollama_cfg.get("model", "qwen2.5:14b"),
                     timeout=ollama_cfg.get("timeout", 120),
                 )
             )

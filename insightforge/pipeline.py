@@ -55,20 +55,21 @@ def run(job: VideoJob) -> FinalOutput:
         PipelineError: On unrecoverable stage failures.
     """
     config = load_config(job.config_path)
+    config = _apply_job_overrides(config, job)
     _configure_logging(config)
     logger.info("InsightForge pipeline starting — %s", job.url)
 
     llm_router = LLMRouter.from_config(config)
 
     # Stage 1 — Ingestion
-    logger.info("[1/9] Ingestion")
+    logger.info("[1/9] Ingestion (est ~15-45s, remaining ~depends on video length)")
     try:
         metadata, video_path = ingestion.run(job)
     except Exception as exc:
         raise PipelineError("ingestion", exc) from exc
 
     # Stage 2 — Transcript
-    logger.info("[2/9] Transcript")
+    logger.info("[2/9] Transcript (%s)", _eta_note("transcript", metadata, config, job))
     transcript_cfg = config.get("transcript", {})
     try:
         raw_transcript = transcript_stage.run(
@@ -82,14 +83,14 @@ def run(job: VideoJob) -> FinalOutput:
         raise PipelineError("transcript", exc) from exc
 
     # Stage 3 — Alignment
-    logger.info("[3/9] Alignment")
+    logger.info("[3/9] Alignment (%s)", _eta_note("alignment", metadata, config, job))
     try:
         aligned_transcript = alignment.run(raw_transcript)
     except Exception as exc:
         raise PipelineError("alignment", exc) from exc
 
     # Stage 4 — Chunking
-    logger.info("[4/9] Chunking")
+    logger.info("[4/9] Chunking (%s)", _eta_note("chunking", metadata, config, job))
     chunk_cfg = config.get("chunking", {})
     try:
         chunk_batch = chunking.run(
@@ -103,7 +104,7 @@ def run(job: VideoJob) -> FinalOutput:
         raise PipelineError("chunking", exc) from exc
 
     # Stages 5 & 6 — Fork: frames + importance scoring concurrently
-    logger.info("[5+6/9] Frame extraction + Importance scoring (concurrent)")
+    logger.info("[5+6/9] Frame extraction + Importance scoring (%s)", _eta_note("scoring", metadata, config, job))
     frames_cfg = config.get("frames", {})
     importance_cfg = config.get("importance", {})
     output_cfg = config.get("output", {})
@@ -157,6 +158,14 @@ def run(job: VideoJob) -> FinalOutput:
                 else:
                     raise PipelineError("importance", exc) from exc
 
+    if frame_set:
+        scored_chunks = importance.apply_visual_scores(
+            scored_chunks,
+            frame_set=frame_set,
+            llm_weight=importance_cfg.get("llm_weight", 0.7),
+            visual_weight=importance_cfg.get("visual_weight", 0.3),
+        )
+
     # Filter chunks by detail level
     filtered = importance.filter_by_detail(
         scored_chunks,
@@ -166,8 +175,9 @@ def run(job: VideoJob) -> FinalOutput:
     logger.info("[5+6] %d/%d chunks retained (detail=%s)", len(filtered), len(scored_chunks), job.detail)
 
     # Stage 7 — LLM Processing
-    logger.info("[7/9] LLM processing")
+    logger.info("[7/9] LLM processing (%s)", _eta_note("llm_processing", metadata, config, job, chunk_count=len(filtered)))
     llm_proc_cfg = config.get("llm_processing", {})
+    frames_cfg = config.get("frames", {})
     llm_max_tokens = llm_proc_cfg.get("max_tokens", 8192)
     try:
         sections = llm_processing.run(
@@ -175,12 +185,27 @@ def run(job: VideoJob) -> FinalOutput:
             llm=llm_router,
             frame_set=frame_set,
             max_tokens=llm_max_tokens,
+            hierarchical=llm_proc_cfg.get("hierarchical", True),
+            chunk_summary_max_tokens=llm_proc_cfg.get("chunk_summary_max_tokens", 1024),
+            topic_summary_max_tokens=llm_proc_cfg.get("topic_summary_max_tokens", 2048),
+            max_chunks_per_topic=llm_proc_cfg.get("max_chunks_per_topic", 4),
+            max_chunk_summaries_per_subsection=llm_proc_cfg.get(
+                "max_chunk_summaries_per_subsection", 3
+            ),
+            boundary_threshold=llm_proc_cfg.get("boundary_threshold", 0.58),
+            explanation_style=llm_proc_cfg.get("explanation_style", "well_explained"),
+            frame_rerank_enabled=frames_cfg.get("vlm_rerank_enabled", True),
+            frame_rerank_base_url=frames_cfg.get("vlm_base_url", "http://localhost:1234/v1"),
+            frame_rerank_model=frames_cfg.get("vlm_model", "qwen/qwen3-vl-8b"),
+            frame_rerank_keep=frames_cfg.get("frames_per_section", 2),
+            frame_rerank_max_candidates=frames_cfg.get("vlm_max_candidates", 4),
+            parallel_workers=llm_proc_cfg.get("parallel_workers", 4),
         )
     except Exception as exc:
         raise PipelineError("llm_processing", exc) from exc
 
     # Stage 7b — Executive Summary
-    logger.info("[7b/9] Executive summary")
+    logger.info("[7b/9] Executive summary (%s)", _eta_note("executive_summary", metadata, config, job))
     try:
         executive_summary = llm_processing.generate_executive_summary(
             sections=sections,
@@ -197,10 +222,11 @@ def run(job: VideoJob) -> FinalOutput:
     work_clips_dir = (metadata.work_dir or Path("/tmp")) / "clips"
     clips_created = False
     if ffmpeg_utils.check_ffmpeg():
-        logger.info("[7c/9] Cutting video clips")
+        logger.info("[7c/9] Cutting video clips (%s)", _eta_note("clips", metadata, config, job, section_count=len(_leaf_sections(sections))))
+        leaf_sections = _leaf_sections(sections)
         segments = [
-            (s.timestamp_start, s.timestamp_end, f"section_{s.section_id.split('_')[-1]}")
-            for s in sections
+            (s.timestamp_start, s.timestamp_end, s.section_id)
+            for s in leaf_sections
         ]
         try:
             clip_paths = ffmpeg_utils.cut_video_clips(video_path, work_clips_dir, segments)
@@ -212,7 +238,7 @@ def run(job: VideoJob) -> FinalOutput:
     # Stage 7d — Audio summary (optional)
     work_audio_path = None
     if job.audio_level is not None:
-        logger.info("[7d/9] Audio summary (level=%.1f)", job.audio_level)
+        logger.info("[7d/9] Audio summary (level=%.1f, %s)", job.audio_level, _eta_note("audio", metadata, config, job))
         try:
             audio_text = _build_audio_text(
                 job.audio_level, executive_summary, sections, aligned_transcript
@@ -225,7 +251,7 @@ def run(job: VideoJob) -> FinalOutput:
             work_audio_path = None
 
     # Stage 8 — Formatter
-    logger.info("[8/9] Formatting")
+    logger.info("[8/9] Formatting (%s)", _eta_note("formatting", metadata, config, job))
     try:
         final_output = formatter.run(
             sections=sections,
@@ -243,7 +269,7 @@ def run(job: VideoJob) -> FinalOutput:
         raise PipelineError("formatter", exc) from exc
 
     # Stage 9 — Storage
-    logger.info("[9/9] Storage")
+    logger.info("[9/9] Storage (%s)", _eta_note("storage", metadata, config, job))
     storage_cfg = config.get("storage", {})
     base_dir = Path(output_cfg.get("base_dir", "./output"))
     if job.output_dir != Path("./output"):
@@ -255,6 +281,8 @@ def run(job: VideoJob) -> FinalOutput:
             base_dir=base_dir,
             transcript=aligned_transcript,
             audio_path=work_audio_path,
+            html_enabled=output_cfg.get("html_viewer", False),
+            viewer_config=_viewer_config(config, llm_router),
             cleanup_work_dir=storage_cfg.get("cleanup_work_dir", True),
         )
     except Exception as exc:
@@ -297,31 +325,34 @@ def _build_audio_text(
             text = re.sub(r"\*\*([^*]+)\*\*", r"\1", executive_summary)
             text = re.sub(r"^- ", "", text, flags=re.MULTILINE)
             return text
-        # Fallback: section headings
-        return ". ".join(s.heading for s in sections) + "."
+        # Fallback: section headings (use leaves for hierarchical sections)
+        leaves = _leaf_sections(sections)
+        return ". ".join(s.heading for s in leaves) + "."
 
     # Intermediate levels: blend section content
     parts = []
 
-    if executive_summary and level >= 0.0:
+    if executive_summary:
         import re
         text = re.sub(r"\*\*([^*]+)\*\*", r"\1", executive_summary)
         text = re.sub(r"^- ", "", text, flags=re.MULTILINE)
         parts.append(text)
 
+    leaves = _leaf_sections(sections)
+
     if level >= 0.3:
         # Add section headings
-        headings = ". ".join(f"Section: {s.heading}" for s in sections)
+        headings = ". ".join(f"Section: {s.heading}" for s in leaves)
         parts.append(headings)
 
     if level >= 0.5:
         # Add section summaries
-        for s in sections:
+        for s in leaves:
             parts.append(f"{s.heading}. {s.summary}")
 
     if level >= 0.7:
         # Add key points
-        for s in sections:
+        for s in leaves:
             if s.key_points:
                 points = ". ".join(s.key_points)
                 parts.append(f"{s.heading}. {points}")
@@ -335,6 +366,185 @@ def _configure_logging(config: dict) -> None:
         level=log_cfg.get("level", "INFO"),
         format=log_cfg.get("format", "text"),
     )
+
+
+def _leaf_sections(sections: list) -> list:
+    leaves = []
+    for section in sections:
+        leaves.extend(section.leaf_sections())
+    return leaves
+
+
+def _eta_note(
+    stage: str,
+    metadata,
+    config: dict,
+    job: VideoJob,
+    chunk_count: int = 0,
+    section_count: int = 0,
+) -> str:
+    """Return a rough stage/remaining ETA string for logs."""
+    duration = metadata.duration_seconds
+    stage_seconds = _estimate_stage_seconds(stage, duration, config, job, chunk_count, section_count)
+    remaining_seconds = _estimate_remaining_seconds(stage, duration, config, job, chunk_count, section_count)
+    return f"est ~{_format_seconds(stage_seconds)}, remaining ~{_format_seconds(remaining_seconds)}"
+
+
+def _estimate_stage_seconds(
+    stage: str,
+    duration: float,
+    config: dict,
+    job: VideoJob,
+    chunk_count: int,
+    section_count: int,
+) -> int:
+    minutes = duration / 60.0
+    parallel_workers = max(1, config.get("llm_processing", {}).get("parallel_workers", 4))
+
+    estimates = {
+        "transcript": int(20 + minutes * 3.0),
+        "alignment": 5,
+        "chunking": 8,
+        "scoring": int(20 + max(1, chunk_count or 8) * 10),
+        "llm_processing": int(25 + max(1, chunk_count or 8) * 22 / parallel_workers),
+        "executive_summary": 15,
+        "clips": int(10 + max(1, section_count or 4) * 3),
+        "audio": int(20 + minutes * 1.2),
+        "formatting": 8,
+        "storage": 6,
+    }
+    if not (job.frames_enabled and config.get("frames", {}).get("enabled", True)) and stage == "scoring":
+        estimates["scoring"] = int(12 + max(1, chunk_count or 8) * 8)
+    return max(3, estimates.get(stage, 10))
+
+
+def _estimate_remaining_seconds(
+    current_stage: str,
+    duration: float,
+    config: dict,
+    job: VideoJob,
+    chunk_count: int,
+    section_count: int,
+) -> int:
+    ordered_stages = [
+        "transcript",
+        "alignment",
+        "chunking",
+        "scoring",
+        "llm_processing",
+        "executive_summary",
+        "clips",
+        "audio",
+        "formatting",
+        "storage",
+    ]
+    try:
+        start_index = ordered_stages.index(current_stage) + 1
+    except ValueError:
+        start_index = 0
+
+    remaining = 0
+    for stage in ordered_stages[start_index:]:
+        if stage == "audio" and job.audio_level is None:
+            continue
+        remaining += _estimate_stage_seconds(stage, duration, config, job, chunk_count, section_count)
+    return remaining
+
+
+def _format_seconds(seconds: int) -> str:
+    minutes, secs = divmod(max(0, int(seconds)), 60)
+    if minutes >= 60:
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes}m"
+    if minutes > 0:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _apply_job_overrides(config: dict, job: VideoJob) -> dict:
+    """Apply CLI job overrides after config loading."""
+    config = {**config}
+    llm_cfg = {**config.get("llm", {})}
+    output_cfg = {**config.get("output", {})}
+    config["llm"] = llm_cfg
+    config["output"] = output_cfg
+
+    llm_cfg["mode"] = job.mode
+    if job.html_enabled:
+        output_cfg["html_viewer"] = True
+
+    if job.model_override:
+        if job.mode == "api":
+            anthropic_cfg = {**llm_cfg.get("anthropic", {})}
+            anthropic_cfg["model"] = job.model_override
+            llm_cfg["anthropic"] = anthropic_cfg
+        else:
+            ollama_cfg = {**llm_cfg.get("ollama", {})}
+            ollama_cfg["model"] = job.model_override
+            llm_cfg["ollama"] = ollama_cfg
+
+            if llm_cfg.get("lmstudio") is not None:
+                lmstudio_cfg = {**llm_cfg.get("lmstudio", {})}
+                lmstudio_cfg["model"] = job.model_override
+                llm_cfg["lmstudio"] = lmstudio_cfg
+
+    return config
+
+
+def _viewer_config(config: dict, llm_router: Optional["LLMRouter"] = None) -> dict:
+    llm_cfg = config.get("llm", {})
+    mode = llm_cfg.get("mode", "local")
+    viewer = {"chat": {"enabled": False, "mode": mode}}
+    if mode != "local":
+        return viewer
+
+    # Build candidate list in router order: LMStudio first, then Ollama.
+    # Pick the first one that is actually reachable right now.
+    candidates = []
+
+    lmstudio_cfg = llm_cfg.get("lmstudio", {}) or {}
+    if lmstudio_cfg:
+        candidates.append(("lmstudio", lmstudio_cfg))
+
+    ollama_cfg = llm_cfg.get("ollama", {}) or {}
+    candidates.append(("ollama", ollama_cfg))
+
+    # If we have the router, probe providers in order to match actual availability
+    if llm_router is not None:
+        provider_available = {}
+        for provider in llm_router.providers:
+            try:
+                provider_available[provider.name] = provider.is_available()
+            except Exception:
+                provider_available[provider.name] = False
+
+        for name, cfg in candidates:
+            if provider_available.get(name, False):
+                viewer["chat"] = _chat_entry(name, cfg)
+                return viewer
+
+    # Fallback: pick the first configured candidate (original behavior)
+    for name, cfg in candidates:
+        viewer["chat"] = _chat_entry(name, cfg)
+        return viewer
+
+    return viewer
+
+
+def _chat_entry(provider_name: str, cfg: dict) -> dict:
+    if provider_name == "lmstudio":
+        return {
+            "enabled": True,
+            "provider": "lmstudio",
+            "base_url": cfg.get("base_url", "http://localhost:1234/v1"),
+            "model": cfg.get("model", "local-model"),
+        }
+    return {
+        "enabled": True,
+        "provider": "ollama",
+        "base_url": cfg.get("base_url", "http://localhost:11434"),
+        "model": cfg.get("model", "llama3.2"),
+    }
 
 
 class PipelineError(Exception):

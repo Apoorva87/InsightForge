@@ -85,6 +85,41 @@ class OllamaProvider(LLMProvider):
             return False
 
 
+def _find_json_objects(text: str) -> list[str]:
+    """Find all top-level JSON object substrings using balanced-brace matching."""
+    results: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "{":
+            depth = 0
+            in_string = False
+            escape_next = False
+            for j in range(i, len(text)):
+                ch = text[j]
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == "\\":
+                    if in_string:
+                        escape_next = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        results.append(text[i : j + 1])
+                        i = j
+                        break
+        i += 1
+    return results
+
+
 def _extract_from_thinking(thinking: str) -> str:
     """Extract a useful answer from a thinking model's reasoning trace.
 
@@ -95,8 +130,7 @@ def _extract_from_thinking(thinking: str) -> str:
 
     # Look for JSON objects — prefer larger ones (note sections) over small ones (scores)
     json_candidates = []
-    for match in re.finditer(r"\{[^{}]+\}", thinking):
-        candidate = match.group(0)
+    for candidate in _find_json_objects(thinking):
         try:
             parsed = _json.loads(candidate)
             if isinstance(parsed, dict) and parsed:

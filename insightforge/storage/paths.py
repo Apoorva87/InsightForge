@@ -44,6 +44,21 @@ def clips_dir(output_dir: Path) -> Path:
     return output_dir / "clips"
 
 
+def source_video_dir(output_dir: Path) -> Path:
+    """Return the path for the copied source video subdirectory."""
+    return output_dir / "video"
+
+
+def html_index_path(output_dir: Path) -> Path:
+    """Return the path for the browsable HTML viewer."""
+    return output_dir / "viewer" / "index.html"
+
+
+def notes_html_path(output_dir: Path) -> Path:
+    """Return the path for the notes-only HTML page."""
+    return output_dir / "viewer" / "notes.html"
+
+
 def audio_path(output_dir: Path) -> Path:
     """Return the path for the summary.mp3 audio file."""
     return output_dir / "summary.mp3"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -16,6 +16,8 @@ class LLMRequest(BaseModel):
     max_tokens: int = 1024
     temperature: float = 0.3
     stop: list[str] = []
+    response_format: Optional[dict[str, Any]] = None
+    extra_body: Optional[dict[str, Any]] = None
 
 
 class LLMResponse(BaseModel):

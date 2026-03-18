@@ -10,6 +10,7 @@ from typing import Optional
 from insightforge.models.output import FinalOutput
 from insightforge.models.transcript import TranscriptResult
 from insightforge.models.video import VideoMetadata
+from insightforge.storage.html_export import write_html_viewer
 from insightforge.storage import paths as storage_paths
 from insightforge.utils.logging import get_logger
 
@@ -22,6 +23,8 @@ def write(
     base_dir: Path,
     transcript: Optional[TranscriptResult] = None,
     audio_path: Optional[Path] = None,
+    html_enabled: bool = False,
+    viewer_config: Optional[dict] = None,
     cleanup_work_dir: bool = True,
 ) -> FinalOutput:
     """Write all output artefacts to disk.
@@ -94,6 +97,15 @@ def write(
         shutil.copy2(audio_path, dest_audio_path)
         logger.info("Copied audio summary to %s", dest_audio_path)
 
+    # 3d. Copy source video for HTML viewer
+    dest_video_path = None
+    if html_enabled and metadata.video_path and metadata.video_path.exists():
+        dest_video_dir = storage_paths.source_video_dir(out_dir)
+        dest_video_dir.mkdir(parents=True, exist_ok=True)
+        dest_video_path = dest_video_dir / f"source{metadata.video_path.suffix or '.mp4'}"
+        shutil.copy2(metadata.video_path, dest_video_path)
+        logger.info("Copied source video to %s", dest_video_path)
+
     # 4. Write metadata.json
     meta_file = storage_paths.metadata_path(out_dir)
     meta_payload = {
@@ -111,6 +123,39 @@ def write(
     meta_file.write_text(json.dumps(meta_payload, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("Wrote %s", meta_file)
 
+    html_file = None
+    notes_html_file = None
+    if html_enabled:
+        html_output = FinalOutput(
+            **{
+                **output.model_dump(
+                    exclude={
+                        "notes_path",
+                        "transcript_path",
+                        "frames_dir",
+                        "clips_dir",
+                        "source_video_path",
+                        "audio_path",
+                        "html_path",
+                        "notes_html_path",
+                        "metadata_path",
+                    }
+                ),
+                "frames_dir": dest_frames_dir,
+                "clips_dir": dest_clips_dir,
+                "source_video_path": dest_video_path,
+            }
+        )
+        html_file, notes_html_file = write_html_viewer(
+            output=html_output,
+            metadata=metadata,
+            transcript=transcript,
+            output_dir=out_dir,
+            viewer_config=viewer_config,
+        )
+        logger.info("Wrote %s", html_file)
+        logger.info("Wrote %s", notes_html_file)
+
     # 5. Optionally clean up work directory
     if cleanup_work_dir and metadata.work_dir and metadata.work_dir.exists():
         shutil.rmtree(metadata.work_dir)
@@ -118,12 +163,15 @@ def write(
 
     return FinalOutput(
         **{
-            **output.model_dump(exclude={"notes_path", "transcript_path", "frames_dir", "clips_dir", "audio_path", "metadata_path"}),
+            **output.model_dump(exclude={"notes_path", "transcript_path", "frames_dir", "clips_dir", "source_video_path", "audio_path", "html_path", "notes_html_path", "metadata_path"}),
             "notes_path": notes_file,
             "transcript_path": transcript_file,
             "frames_dir": dest_frames_dir,
             "clips_dir": dest_clips_dir,
+            "source_video_path": dest_video_path,
             "audio_path": dest_audio_path,
+            "html_path": html_file,
+            "notes_html_path": notes_html_file,
             "metadata_path": meta_file,
         }
     )

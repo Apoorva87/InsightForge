@@ -26,6 +26,7 @@ def process(
     mode: str = typer.Option("local", "--mode", "-m", help="LLM mode: local | api"),
     detail: str = typer.Option("high", "--detail", "-d", help="Output detail: high | low"),
     frames: str = typer.Option("on", "--frames", help="Frame extraction: on | off"),
+    html: str = typer.Option("off", "--html", help="Browsable HTML viewer export: on | off"),
     audio: Optional[float] = typer.Option(None, "--audio", help="Audio summary verbosity: 0.0 (exec summary) to 1.0 (full transcript). Omit to skip."),
     output_dir: Path = typer.Option(Path("./output"), "--output-dir", "-o", help="Output directory"),
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config YAML"),
@@ -45,6 +46,7 @@ def process(
         mode=mode,
         detail=detail,
         frames_enabled=(frames.lower() == "on"),
+        html_enabled=(html.lower() == "on"),
         audio_level=audio,
         output_dir=output_dir,
         config_path=config,
@@ -66,7 +68,26 @@ def process(
         console.print(f"Frames: [cyan]{result.frames_dir}[/cyan] ({frame_count} images)")
     if result.audio_path and result.audio_path.exists():
         console.print(f"Audio: [cyan]{result.audio_path}[/cyan]")
+    if result.html_path and result.html_path.exists():
+        console.print(f"HTML viewer: [cyan]{result.html_path}[/cyan]")
     console.print(f"Metadata: [cyan]{result.metadata_path}[/cyan]")
+
+
+@app.command("audio-summary")
+def audio_summary(
+    output_dir: Path = typer.Argument(..., help="Existing InsightForge output directory"),
+    audio: float = typer.Option(0.5, "--audio", help="Audio summary verbosity: 0.0 (exec summary) to 1.0 (full transcript)."),
+) -> None:
+    """Generate an audio summary from an existing output directory."""
+    from insightforge.audio import generate_audio_from_output_dir
+
+    try:
+        audio_path = generate_audio_from_output_dir(output_dir, audio)
+    except Exception as exc:
+        err_console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[bold green]Done![/bold green] Audio written to [cyan]{audio_path}[/cyan]")
 
 
 @app.command("check")

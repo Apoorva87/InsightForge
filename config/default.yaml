@@ -2,12 +2,12 @@ llm:
   mode: local                       # local | api
   ollama:
     base_url: http://localhost:11434
-    model: glm-4.7-flash:latest
+    model: qwen2.5:14b
     timeout: 120
     context_window: 8192
   lmstudio:
     base_url: http://localhost:1234/v1
-    model: null                     # auto-detected from server
+    model: qwen/qwen3.5-9b
     timeout: 120
   anthropic:
     model: claude-haiku-4-5-20251001
@@ -35,9 +35,22 @@ frames:
   top_k: 30
   output_quality: 2                 # ffmpeg -q:v, 1=best, 31=worst
   max_width: 1280
+  frames_per_section: 2
+  vlm_rerank_enabled: true
+  vlm_base_url: http://localhost:1234/v1
+  vlm_model: qwen/qwen3-vl-8b
+  vlm_max_candidates: 4
 
 llm_processing:
   max_tokens: 8192                  # token budget for note generation per chunk
+  hierarchical: true
+  parallel_workers: 4
+  explanation_style: well_explained # concise | well_explained | educational
+  chunk_summary_max_tokens: 1024
+  topic_summary_max_tokens: 2048
+  max_chunks_per_topic: 4
+  max_chunk_summaries_per_subsection: 3
+  boundary_threshold: 0.58
 
 importance:
   threshold: 0.15
@@ -49,6 +62,7 @@ output:
   base_dir: ./output
   embed_frames_inline: true
   include_timestamp_index: true
+  html_viewer: false
   markdown_flavor: github           # github | standard
 
 logging:

@@ -250,7 +250,7 @@ YouTube URL
 
 Stages 5 and 6 run concurrently — frame extraction is I/O-bound (ffmpeg) while importance scoring is network-bound (LLM calls).
 
-For the full architecture document covering data models, LLM abstraction, concurrency, and error handling, see **[architecture.md](architecture.md)**.
+For the architecture docs covering pipeline flow, storage, HTML viewer internals, AI chat, and logging/debugging, see **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ### LLM providers
 
@@ -324,7 +324,7 @@ insightforge/
 
 | Document | Description |
 |----------|-------------|
-| [architecture.md](architecture.md) | Detailed system architecture, data models, concurrency, error handling |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Top-level architecture map with links to storage, viewer, AI chat, and logging deep dives |
 | [TUNING.md](TUNING.md) | Complete parameter reference with tuning recipes for different video types |
 | [CLAUDE.md](CLAUDE.md) | Development context and session history |
 | [execution_log.md](execution_log.md) | Chronological build log |

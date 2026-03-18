@@ -1,0 +1,33 @@
+transcript:
+  prefer_manual: true
+  whisper_model: base
+
+chunking:
+  strategy: hybrid
+  max_tokens: 950
+  min_tokens: 150
+  overlap_tokens: 40
+
+frames:
+  enabled: true
+  extraction_mode: scene_change
+  scene_diff_threshold: 0.24
+  top_k: 20
+  frames_per_section: 1
+  vlm_rerank_enabled: true
+  vlm_max_candidates: 3
+
+llm_processing:
+  hierarchical: true
+  parallel_workers: 4
+  explanation_style: concise
+  max_chunks_per_topic: 5
+  max_chunk_summaries_per_subsection: 2
+  boundary_threshold: 0.64
+
+importance:
+  threshold: 0.28
+
+output:
+  include_timestamp_index: true
+  embed_frames_inline: true

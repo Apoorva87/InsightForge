@@ -73,6 +73,30 @@ def run(
     return scored
 
 
+def apply_visual_scores(
+    scored_chunks: list[ScoredChunk],
+    frame_set: Optional[FrameSet],
+    llm_weight: float = 0.7,
+    visual_weight: float = 0.3,
+) -> list[ScoredChunk]:
+    """Apply visual scores to existing scored chunks and recompute composite scores.
+
+    This lets the pipeline preserve concurrency: LLM scoring can run while frames
+    are extracted, then the visual signal can be merged in after both branches join.
+    """
+    if frame_set is None or not frame_set.frames:
+        return scored_chunks
+
+    chunk_batch = ChunkBatch(chunks=[sc.chunk for sc in scored_chunks], strategy="scored")
+    visual_scores = _compute_visual_scores(chunk_batch, frame_set)
+
+    for sc in scored_chunks:
+        sc.visual_score = visual_scores.get(sc.chunk.chunk_id, 0.0)
+        sc.compute_composite(llm_weight=llm_weight, visual_weight=visual_weight)
+
+    return scored_chunks
+
+
 def _score_chunk_llm(chunk: Chunk, llm: LLMProvider) -> float:
     """Ask the LLM for an importance score for a single chunk."""
     prompt = _USER_TEMPLATE.format(timestamp=chunk.timestamp_str, text=chunk.text[:800])
@@ -167,8 +191,15 @@ def _compute_visual_scores(
     scores: dict[str, float] = {}
     for chunk in chunk_batch.chunks:
         frame = frame_set.get_frame_near(chunk.midpoint, tolerance=15.0)
-        if frame and frame.scene_diff_score is not None:
-            scores[chunk.chunk_id] = max(0.0, min(1.0, frame.scene_diff_score))
+        if not frame:
+            continue
+
+        visual_score = frame.scene_diff_score
+        if visual_score is None:
+            visual_score = frame.content_score
+
+        if visual_score is not None:
+            scores[chunk.chunk_id] = max(0.0, min(1.0, visual_score))
     return scores
 
 
@@ -194,7 +225,8 @@ def filter_by_detail(
             above_threshold = scored_chunks  # never return empty
         sorted_chunks = sorted(above_threshold, key=lambda s: s.composite_score, reverse=True)
         top_n = max(1, len(sorted_chunks) // 4)
-        return sorted_chunks[:top_n]
+        selected = sorted_chunks[:top_n]
+        return sorted(selected, key=lambda s: (s.chunk.start, s.chunk.end))
 
     # detail=high: keep ALL chunks — the whole video is worth summarising
     return scored_chunks

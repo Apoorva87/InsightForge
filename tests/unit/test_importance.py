@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from insightforge.models.scoring import ScoredChunk
-from insightforge.stages.importance import run, filter_by_detail, _compute_visual_scores
+from insightforge.models.frame import Frame, FrameSet
+from insightforge.stages.importance import (
+    _compute_visual_scores,
+    apply_visual_scores,
+    filter_by_detail,
+    run,
+)
 from tests.conftest import MockLLMProvider
 
 
@@ -53,3 +60,33 @@ class TestFilterByDetail:
         scored[1].composite_score = 0.3
         filtered = filter_by_detail(scored, detail="low", threshold=0.0)
         assert len(filtered) <= max(1, len(scored) // 4)
+
+    def test_low_returns_results_in_chronological_order(self, sample_chunk_batch, mock_llm):
+        scored = run(sample_chunk_batch, llm=mock_llm)
+        scored[0].composite_score = 0.3
+        scored[1].composite_score = 0.9
+        filtered = filter_by_detail(scored, detail="low", threshold=0.0)
+        assert filtered == sorted(filtered, key=lambda s: s.chunk.start)
+
+
+class TestApplyVisualScores:
+    def test_uses_content_score_when_scene_diff_missing(self, sample_chunk_batch, mock_llm, tmp_path):
+        scored = run(sample_chunk_batch, llm=mock_llm)
+        frame_path = tmp_path / "frame_vis.jpg"
+        frame_path.write_bytes(b"frame")
+        frame_set = FrameSet(
+            frames=[
+                Frame(
+                    frame_id="frame_0000",
+                    timestamp=6.0,
+                    path=frame_path,
+                    content_score=0.75,
+                )
+            ],
+            extraction_mode="scene_change",
+        )
+
+        updated = apply_visual_scores(scored, frame_set, llm_weight=0.7, visual_weight=0.3)
+
+        assert updated[0].visual_score == pytest.approx(0.75)
+        assert updated[0].composite_score > scored[0].llm_score * 0.7

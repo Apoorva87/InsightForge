@@ -16,6 +16,7 @@ class VideoJob(BaseModel):
     detail: str = "high"          # "high" | "low"
     frames_enabled: bool = True
     audio_level: Optional[float] = None   # None = no audio; 0.0–1.0 verbosity
+    html_enabled: bool = False
     output_dir: Path = Path("./output")
     config_path: Optional[Path] = None
     model_override: Optional[str] = None

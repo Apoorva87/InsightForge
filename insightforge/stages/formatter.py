@@ -47,7 +47,7 @@ def run(
 
     for section in sections:
         lines.extend(
-            _render_section(section, frames_dir, embed_frames_inline, clips_dir)
+            _render_section(section, frames_dir, embed_frames_inline, clips_dir, level=2)
         )
         lines.append("")
 
@@ -67,6 +67,7 @@ def run(
         title=metadata.title,
         channel=metadata.channel,
         duration_seconds=metadata.duration_seconds,
+        video_url=video_url,
         executive_summary=executive_summary,
         sections=sections,
         markdown_content=markdown,
@@ -107,10 +108,16 @@ def _render_timestamp_index(sections: list[NoteSection]) -> list[str]:
     """Render a clickable table of contents with timestamps."""
     lines = ["## Contents", ""]
     for section in sections:
-        anchor = _heading_to_anchor(section.heading)
-        lines.append(
-            f"- {section.timestamp_str} — [{section.heading}](#{anchor})"
-        )
+        lines.extend(_render_timestamp_index_entry(section, indent=0))
+    return lines
+
+
+def _render_timestamp_index_entry(section: NoteSection, indent: int) -> list[str]:
+    prefix = "  " * indent
+    anchor = _heading_to_anchor(section.heading)
+    lines = [f"{prefix}- {section.timestamp_str} — [{section.heading}](#{anchor})"]
+    for subsection in section.subsections:
+        lines.extend(_render_timestamp_index_entry(subsection, indent + 1))
     return lines
 
 
@@ -119,20 +126,22 @@ def _render_section(
     frames_dir: Optional[Path],
     embed_frames_inline: bool,
     clips_dir: Optional[Path] = None,
+    level: int = 2,
 ) -> list[str]:
     """Render a single NoteSection to Markdown lines with inline frames."""
     ts_display = f"*{section.timestamp_str}*"
+    heading_prefix = "#" * max(2, min(level, 6))
 
     lines = [
-        f"## {section.heading}",
+        f"{heading_prefix} {section.heading}",
         "",
         ts_display,
         "",
     ]
 
     # Local video clip embed
-    if clips_dir:
-        clip_name = f"section_{section.section_id.split('_')[-1]}.mp4"
+    if clips_dir and section.is_leaf:
+        clip_name = f"{section.section_id}.mp4"
         clip_rel = Path("clips") / clip_name
         lines.append(f'<video controls width="100%" src="{clip_rel}"></video>')
         lines.append("")
@@ -156,6 +165,18 @@ def _render_section(
                 rel_path = _frame_rel_path(frame, frames_dir)
                 lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
             lines.append("")
+
+    for subsection in section.subsections:
+        lines.extend(
+            _render_section(
+                subsection,
+                frames_dir=frames_dir,
+                embed_frames_inline=embed_frames_inline,
+                clips_dir=clips_dir,
+                level=level + 1,
+            )
+        )
+        lines.append("")
 
     return lines
 
@@ -211,6 +232,10 @@ def _render_transcript_md(
     clips_dir: Optional[Path] = None,
 ) -> str:
     """Generate a full transcript.md with raw transcript text and inline frames per section."""
+    transcript_start = transcript.segments[0].start if transcript.segments else 0.0
+    transcript_end = transcript.segments[-1].end if transcript.segments else 0.0
+    blocks = _build_transcript_blocks_for_range(sections, transcript_start, transcript_end)
+
     lines: list[str] = [
         f"# {metadata.title} — Full Transcript",
         "",
@@ -226,78 +251,223 @@ def _render_transcript_md(
     lines.append("## Sections")
     lines.append("")
     for section in sections:
-        anchor = _heading_to_anchor(section.heading)
-        lines.append(f"- {section.timestamp_str} — [{section.heading}](#{anchor})")
+        lines.extend(_render_timestamp_index_entry(section, indent=0))
     lines.append("")
 
-    # Each section: heading, clip, then raw transcript with interleaved frames
-    for section in sections:
-        lines.append(f"## {section.heading}")
-        lines.append("")
-        lines.append(f"*{section.timestamp_str} — {section.timestamp_end_str}*")
-        lines.append("")
-
-        # Local video clip
-        if clips_dir:
-            clip_name = f"section_{section.section_id.split('_')[-1]}.mp4"
-            clip_rel = Path("clips") / clip_name
-            lines.append(f'<video controls width="100%" src="{clip_rel}"></video>')
-            lines.append("")
-
-        # Get transcript segments for this section's time range
-        section_segments = [
-            seg for seg in transcript.segments
-            if seg.start >= section.timestamp_start - 0.5
-            and seg.start < section.timestamp_end + 0.5
-        ]
-
-        # Get sorted frames for this section
-        sorted_frames = (
-            sorted(section.frames, key=lambda f: f.timestamp)
-            if section.frames else []
+    # Sections and transcript blocks, preserving hierarchy while keeping full coverage
+    for block in blocks:
+        lines.extend(
+            _render_transcript_block(
+                block=block,
+                transcript=transcript,
+                frames_dir=frames_dir,
+                clips_dir=clips_dir,
+                level=2,
+            )
         )
-
-        # Group segments into blurbs split by frame positions.
-        # Each blurb gets one timestamp at the start, then continuous text,
-        # then the frame(s) that follow.
-        frame_times = [f.timestamp for f in sorted_frames]
-        blurbs = _split_segments_into_blurbs(section_segments, frame_times)
-
-        frame_idx = 0
-        for blurb_segments in blurbs:
-            if not blurb_segments:
-                continue
-            # One timestamp for the blurb
-            lines.append(f"**[{blurb_segments[0].timestamp_str}]**")
-            lines.append("")
-            # Continuous text paragraph
-            text = " ".join(seg.text for seg in blurb_segments)
-            lines.append(text)
-            lines.append("")
-            # Insert frames that fall between this blurb's end and the next blurb
-            blurb_end = blurb_segments[-1].end
-            while frame_idx < len(sorted_frames):
-                frame = sorted_frames[frame_idx]
-                if frame.timestamp <= blurb_end + 1.5:
-                    rel_path = _frame_rel_path(frame, frames_dir)
-                    lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
-                    lines.append("")
-                    frame_idx += 1
-                else:
-                    break
-
-        # Flush remaining frames
-        while frame_idx < len(sorted_frames):
-            frame = sorted_frames[frame_idx]
-            rel_path = _frame_rel_path(frame, frames_dir)
-            lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
-            lines.append("")
-            frame_idx += 1
-
         lines.append("---")
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _build_transcript_blocks_for_range(
+    sections: list[NoteSection],
+    range_start: float,
+    range_end: float,
+) -> list[dict[str, object]]:
+    """Build non-overlapping blocks for a time range, preserving section hierarchy."""
+    sorted_sections = sorted(sections, key=lambda s: (s.timestamp_start, s.timestamp_end))
+
+    blocks: list[dict[str, object]] = []
+    cursor = range_start
+
+    for index, section in enumerate(sorted_sections):
+        section_start = max(cursor, section.timestamp_start)
+        next_start = (
+            sorted_sections[index + 1].timestamp_start
+            if index + 1 < len(sorted_sections)
+            else range_end
+        )
+        section_end = min(section.timestamp_end, next_start, range_end)
+
+        if cursor < section_start:
+            blocks.append(_make_transcript_block(cursor, section_start, None))
+
+        if section_end > section_start:
+            blocks.append(_make_transcript_block(section_start, section_end, section))
+            cursor = section_end
+        else:
+            cursor = max(cursor, section_start)
+
+    if cursor < range_end:
+        blocks.append(_make_transcript_block(cursor, range_end, None))
+
+    return [block for block in blocks if block["end"] > block["start"]]
+
+
+def _leaf_sections(sections: list[NoteSection]) -> list[NoteSection]:
+    leaves: list[NoteSection] = []
+    for section in sections:
+        leaves.extend(section.leaf_sections())
+    return leaves
+
+
+def _make_transcript_block(
+    start: float,
+    end: float,
+    section: Optional[NoteSection],
+) -> dict[str, object]:
+    """Create a transcript block descriptor."""
+    heading = section.heading if section is not None else f"Transcript {NoteSection._format_time(start)}"
+    return {
+        "heading": heading,
+        "start": start,
+        "end": end,
+        "timestamp_str": NoteSection._format_time(start),
+        "timestamp_end_str": NoteSection._format_time(end),
+        "section": section,
+    }
+
+
+def _render_transcript_block(
+    block: dict[str, object],
+    transcript: TranscriptResult,
+    frames_dir: Optional[Path],
+    clips_dir: Optional[Path],
+    level: int,
+) -> list[str]:
+    """Render one transcript block, preserving parent/sub-section hierarchy."""
+    section = block["section"]
+    if section is None:
+        return _render_leaf_transcript_block(
+            heading=str(block["heading"]),
+            start=float(block["start"]),
+            end=float(block["end"]),
+            transcript=transcript,
+            frames_dir=frames_dir,
+            section=None,
+            level=level,
+            clips_dir=clips_dir,
+        )
+
+    if section.is_leaf:
+        return _render_leaf_transcript_block(
+            heading=section.heading,
+            start=float(block["start"]),
+            end=float(block["end"]),
+            transcript=transcript,
+            frames_dir=frames_dir,
+            section=section,
+            level=level,
+            clips_dir=clips_dir,
+        )
+
+    lines = [
+        f"{'#' * max(2, min(level, 6))} {section.heading}",
+        "",
+        f"*{section.timestamp_str} — {section.timestamp_end_str}*",
+        "",
+    ]
+
+    if section.summary:
+        lines.append(section.summary)
+        lines.append("")
+    if section.key_points:
+        for point in section.key_points:
+            lines.append(f"- {point}")
+        lines.append("")
+
+    child_blocks = _build_transcript_blocks_for_range(
+        section.subsections,
+        section.timestamp_start,
+        section.timestamp_end,
+    )
+    for child_block in child_blocks:
+        lines.extend(
+            _render_transcript_block(
+                block=child_block,
+                transcript=transcript,
+                frames_dir=frames_dir,
+                clips_dir=clips_dir,
+                level=level + 1,
+            )
+        )
+    return lines
+
+
+def _render_leaf_transcript_block(
+    heading: str,
+    start: float,
+    end: float,
+    transcript: TranscriptResult,
+    frames_dir: Optional[Path],
+    section: Optional[NoteSection],
+    level: int,
+    clips_dir: Optional[Path],
+) -> list[str]:
+    """Render a transcript leaf block with raw transcript blurbs and optional frames/clips."""
+    heading_prefix = "#" * max(2, min(level, 6))
+    lines = [
+        f"{heading_prefix} {heading}",
+        "",
+        f"*{NoteSection._format_time(start)} — {NoteSection._format_time(end)}*",
+        "",
+    ]
+
+    if clips_dir and section is not None and section.is_leaf:
+        clip_name = f"{section.section_id}.mp4"
+        clip_rel = Path("clips") / clip_name
+        lines.append(f'<video controls width="100%" src="{clip_rel}"></video>')
+        lines.append("")
+
+    section_segments = [
+        seg for seg in transcript.segments
+        if seg.start >= start
+        and (
+            seg.start < end
+            or (
+                end == transcript.segments[-1].end
+                and seg.start <= end
+            )
+        )
+    ]
+
+    sorted_frames = (
+        sorted(section.frames, key=lambda f: f.timestamp)
+        if section and section.frames else []
+    )
+    frame_times = [f.timestamp for f in sorted_frames]
+    blurbs = _split_segments_into_blurbs(section_segments, frame_times)
+
+    frame_idx = 0
+    for blurb_segments in blurbs:
+        if not blurb_segments:
+            continue
+        lines.append(f"**[{blurb_segments[0].timestamp_str}]**")
+        lines.append("")
+        text = " ".join(seg.text for seg in blurb_segments)
+        lines.append(text)
+        lines.append("")
+        blurb_end = blurb_segments[-1].end
+        while frame_idx < len(sorted_frames):
+            frame = sorted_frames[frame_idx]
+            if frame.timestamp <= blurb_end + 1.5:
+                rel_path = _frame_rel_path(frame, frames_dir)
+                lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
+                lines.append("")
+                frame_idx += 1
+            else:
+                break
+
+    while frame_idx < len(sorted_frames):
+        frame = sorted_frames[frame_idx]
+        rel_path = _frame_rel_path(frame, frames_dir)
+        lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
+        lines.append("")
+        frame_idx += 1
+
+    return lines
 
 
 def _split_segments_into_blurbs(

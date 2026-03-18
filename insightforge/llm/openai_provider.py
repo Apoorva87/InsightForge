@@ -68,12 +68,27 @@ class OpenAIProvider(LLMProvider):
         }
         if request.stop:
             kwargs["stop"] = request.stop
+        if request.response_format:
+            kwargs["response_format"] = request.response_format
+        if request.extra_body:
+            kwargs["extra_body"] = request.extra_body
 
         start = time.monotonic()
         try:
             response = self._client.chat.completions.create(**kwargs)
         except self._openai.OpenAIError as exc:
-            raise LLMProviderError(self.name, str(exc), cause=exc) from exc
+            if request.response_format or request.extra_body:
+                fallback_kwargs = {
+                    key: value
+                    for key, value in kwargs.items()
+                    if key not in {"response_format", "extra_body"}
+                }
+                try:
+                    response = self._client.chat.completions.create(**fallback_kwargs)
+                except self._openai.OpenAIError:
+                    raise LLMProviderError(self.name, str(exc), cause=exc) from exc
+            else:
+                raise LLMProviderError(self.name, str(exc), cause=exc) from exc
 
         elapsed_ms = (time.monotonic() - start) * 1000
         choice = response.choices[0]

@@ -6,6 +6,9 @@
 #   ./view.sh --dir ./my-output   # use a custom output directory
 #   ./view.sh --glow              # force terminal viewer (glow)
 #   ./view.sh --obsidian          # force Obsidian
+#   ./view.sh --html              # open HTML viewer directly
+#   ./view.sh --notes-html        # open notes-only HTML page
+#   ./view.sh --host-html         # serve HTML viewer over localhost
 #   ./view.sh <folder_name>       # open a specific output directly
 #
 set -euo pipefail
@@ -25,6 +28,18 @@ OUTPUT_DIR="$SCRIPT_DIR/output"
 VIEWER=""        # auto-detect
 DIRECT_FOLDER="" # if user passes a folder name directly
 
+# ---- Find Python ----
+if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python"
+elif command -v python3.11 &>/dev/null; then
+    PYTHON=python3.11
+elif command -v python3 &>/dev/null; then
+    PYTHON=python3
+else
+    echo -e "${RED}Python 3 not found.${NC}"
+    exit 1
+fi
+
 # ---- Parse arguments ----
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -40,6 +55,18 @@ while [[ $# -gt 0 ]]; do
             VIEWER="obsidian"
             shift
             ;;
+        --html)
+            VIEWER="html"
+            shift
+            ;;
+        --notes-html)
+            VIEWER="notes-html"
+            shift
+            ;;
+        --host-html)
+            VIEWER="html-host"
+            shift
+            ;;
         --help|-h)
             echo -e "${BOLD}InsightForge Viewer${NC}"
             echo ""
@@ -49,6 +76,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --dir PATH       Output directory to browse (default: ./output)"
             echo "  --glow           Use glow (terminal Markdown viewer)"
             echo "  --obsidian       Use Obsidian (GUI Markdown editor)"
+            echo "  --html           Open viewer/index.html if available"
+            echo "  --notes-html     Open viewer/notes.html if available"
+            echo "  --host-html      Serve viewer/index.html on localhost and open it"
             echo "  -h, --help       Show this help"
             echo ""
             echo "If no viewer is specified, you'll be prompted to choose."
@@ -127,12 +157,14 @@ else
         fi
         has_transcript="no"
         [[ -f "$dir/transcript.txt" ]] && has_transcript="yes"
+        has_html="no"
+        [[ -f "$dir/viewer/index.html" ]] && has_html="yes"
 
         # Display
         num=$((i + 1))
         echo -e "  ${BOLD}${num}.${NC} ${GREEN}${title}${NC}"
         echo -e "     ${DIM}${folder}${NC}"
-        echo -e "     ${DIM}Frames: ${frame_count} | Transcript: ${has_transcript}${NC}"
+        echo -e "     ${DIM}Frames: ${frame_count} | Transcript: ${has_transcript} | HTML: ${has_html}${NC}"
         echo ""
     done
 
@@ -161,6 +193,12 @@ for f in notes.md transcript.txt metadata.json; do
         echo -e "  ${GREEN}✓${NC} $f  ${DIM}(${size} bytes)${NC}"
     fi
 done
+if [[ -f "$SELECTED/viewer/index.html" ]]; then
+    echo -e "  ${GREEN}✓${NC} viewer/index.html  ${DIM}(interactive HTML viewer)${NC}"
+fi
+if [[ -f "$SELECTED/viewer/notes.html" ]]; then
+    echo -e "  ${GREEN}✓${NC} viewer/notes.html  ${DIM}(notes-only HTML page)${NC}"
+fi
 if [[ -d "$SELECTED/frames" ]]; then
     fc=$(find "$SELECTED/frames" -maxdepth 1 -name "*.jpg" -type f 2>/dev/null | wc -l | tr -d ' ')
     echo -e "  ${GREEN}✓${NC} frames/  ${DIM}(${fc} images)${NC}"
@@ -174,16 +212,22 @@ if [[ -z "$VIEWER" ]]; then
     echo "  1. glow       (terminal — Markdown only)"
     echo "  2. obsidian   (GUI — Markdown + images)"
     echo "  3. transcript (terminal — full transcript via glow)"
-    echo "  4. open       (open folder in Finder)"
+    echo "  4. html       (open interactive HTML viewer)"
+    echo "  5. notes-html (open notes-only HTML page)"
+    echo "  6. host-html  (serve HTML viewer on localhost)"
+    echo "  7. open       (open folder in Finder)"
     echo ""
-    echo -ne "${CYAN}Choose [1-4]: ${NC}"
+    echo -ne "${CYAN}Choose [1-7]: ${NC}"
     read -r vchoice
 
     case "$vchoice" in
         1) VIEWER="glow" ;;
         2) VIEWER="obsidian" ;;
         3) VIEWER="transcript" ;;
-        4) VIEWER="open" ;;
+        4) VIEWER="html" ;;
+        5) VIEWER="notes-html" ;;
+        6) VIEWER="html-host" ;;
+        7) VIEWER="open" ;;
         *)
             echo -e "${RED}Invalid choice.${NC}"
             exit 1
@@ -215,7 +259,7 @@ case "$VIEWER" in
         # Register vault in Obsidian's config so the URI works
         OBSIDIAN_CONFIG="$HOME/Library/Application Support/obsidian/obsidian.json"
         if [[ -f "$OBSIDIAN_CONFIG" ]]; then
-            python3 -c "
+            "$PYTHON" -c "
 import json, sys, hashlib, time
 cfg_path, vault_path = sys.argv[1], sys.argv[2]
 with open(cfg_path) as f:
@@ -245,6 +289,42 @@ with open(cfg_path, 'w') as f:
         else
             cat "$SELECTED/transcript.txt"
         fi
+        ;;
+    html)
+        if [[ ! -f "$SELECTED/viewer/index.html" ]]; then
+            echo -e "${RED}No HTML viewer found for this video.${NC}"
+            echo -e "Re-run with ${CYAN}./run.sh '<youtube_url>' --html on${NC}"
+            exit 1
+        fi
+        echo -e "${DIM}Opening HTML viewer...${NC}"
+        open "$SELECTED/viewer/index.html"
+        ;;
+    notes-html)
+        if [[ ! -f "$SELECTED/viewer/notes.html" ]]; then
+            echo -e "${RED}No notes HTML page found for this video.${NC}"
+            echo -e "Re-run with ${CYAN}./run.sh '<youtube_url>' --html on${NC}"
+            exit 1
+        fi
+        echo -e "${DIM}Opening notes HTML page...${NC}"
+        open "$SELECTED/viewer/notes.html"
+        ;;
+    html-host)
+        if [[ ! -f "$SELECTED/viewer/index.html" ]]; then
+            echo -e "${RED}No HTML viewer found for this video.${NC}"
+            echo -e "Re-run with ${CYAN}./run.sh '<youtube_url>' --html on${NC}"
+            exit 1
+        fi
+        PORT=8765
+        VIEWER_URL="http://127.0.0.1:${PORT}/$(basename "$SELECTED")/viewer/index.html"
+        echo -e "${DIM}Serving ${OUTPUT_DIR} on ${VIEWER_URL}${NC}"
+        echo -e "${DIM}Press Ctrl+C to stop the local server.${NC}"
+        if command -v open &>/dev/null; then
+            open "$VIEWER_URL" >/dev/null 2>&1 || true
+        fi
+        (
+            cd "$SCRIPT_DIR"
+            "$PYTHON" -m insightforge.viewer_server --root "$OUTPUT_DIR" --port "$PORT"
+        )
         ;;
     open)
         echo -e "${DIM}Opening in Finder...${NC}"
