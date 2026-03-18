@@ -1,0 +1,39 @@
+llm:
+  mode: local
+  ollama:
+    base_url: http://localhost:11434
+    model: llama3.2
+    timeout: 30
+
+transcript:
+  prefer_manual: false
+  whisper_model: tiny
+  language: en
+
+chunking:
+  strategy: hybrid
+  max_tokens: 200
+  min_tokens: 50
+  overlap_tokens: 20
+
+frames:
+  enabled: false
+
+importance:
+  threshold: 0.3
+  llm_weight: 0.7
+  visual_weight: 0.3
+  batch_size: 2
+
+output:
+  base_dir: ./test_output
+  embed_frames_inline: false
+  include_timestamp_index: true
+  markdown_flavor: github
+
+logging:
+  level: WARNING
+  format: text
+
+storage:
+  cleanup_work_dir: false

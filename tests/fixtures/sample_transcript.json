@@ -1,0 +1,13 @@
+{
+  "segments": [
+    {"start": 0.0, "end": 5.0, "text": "Hello and welcome to this tutorial."},
+    {"start": 5.5, "end": 12.0, "text": "Today we are going to learn about Python decorators."},
+    {"start": 12.5, "end": 20.0, "text": "Decorators are a powerful feature in Python."},
+    {"start": 20.5, "end": 30.0, "text": "Let us start with a simple example of a decorator."},
+    {"start": 30.5, "end": 40.0, "text": "Here we define a wrapper function that adds behaviour."},
+    {"start": 40.5, "end": 50.0, "text": "The wrapper function calls the original function inside."},
+    {"start": 50.5, "end": 60.0, "text": "This is the fundamental pattern behind all Python decorators."}
+  ],
+  "source": "whisper",
+  "language": "en"
+}

@@ -1,0 +1,59 @@
+llm:
+  mode: local                       # local | api
+  ollama:
+    base_url: http://localhost:11434
+    model: glm-4.7-flash:latest
+    timeout: 120
+    context_window: 8192
+  lmstudio:
+    base_url: http://localhost:1234/v1
+    model: null                     # auto-detected from server
+    timeout: 120
+  anthropic:
+    model: claude-haiku-4-5-20251001
+    max_tokens: 4096
+  openai:
+    model: gpt-4o-mini
+    base_url: null                  # null = OpenAI cloud; set for LMStudio/local
+
+transcript:
+  prefer_manual: true               # prefer YouTube's own subtitles when available
+  whisper_model: base               # tiny | base | small | medium | large
+  language: null                    # null = auto-detect
+
+chunking:
+  strategy: hybrid                  # token | sentence | hybrid
+  max_tokens: 800
+  min_tokens: 100
+  overlap_tokens: 50
+
+frames:
+  enabled: true
+  extraction_mode: scene_change     # interval | scene_change | timestamp_aligned
+  interval_seconds: 30.0
+  scene_diff_threshold: 0.2
+  top_k: 30
+  output_quality: 2                 # ffmpeg -q:v, 1=best, 31=worst
+  max_width: 1280
+
+llm_processing:
+  max_tokens: 8192                  # token budget for note generation per chunk
+
+importance:
+  threshold: 0.15
+  llm_weight: 0.7
+  visual_weight: 0.3
+  batch_size: 5
+
+output:
+  base_dir: ./output
+  embed_frames_inline: true
+  include_timestamp_index: true
+  markdown_flavor: github           # github | standard
+
+logging:
+  level: INFO
+  format: text                      # text | json
+
+storage:
+  cleanup_work_dir: true
