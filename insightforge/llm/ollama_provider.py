@@ -12,7 +12,10 @@ from insightforge.llm.base import LLMProvider, LLMProviderError, LLMRequest, LLM
 
 
 class OllamaProvider(LLMProvider):
-    """Calls a local Ollama instance at `base_url`."""
+    """Calls a local Ollama instance at `base_url`.
+
+    Reuses an httpx.Client for connection pooling across requests.
+    """
 
     def __init__(
         self,
@@ -23,6 +26,10 @@ class OllamaProvider(LLMProvider):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            timeout=timeout,
+        )
 
     @property
     def name(self) -> str:
@@ -48,10 +55,9 @@ class OllamaProvider(LLMProvider):
 
         start = time.monotonic()
         try:
-            response = httpx.post(
-                f"{self.base_url}/api/generate",
+            response = self._client.post(
+                "/api/generate",
                 json=payload,
-                timeout=self.timeout,
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -79,7 +85,7 @@ class OllamaProvider(LLMProvider):
     def is_available(self) -> bool:
         """Return True if Ollama server is reachable."""
         try:
-            httpx.get(f"{self.base_url}/api/tags", timeout=5.0).raise_for_status()
+            self._client.get("/api/tags", timeout=5.0).raise_for_status()
             return True
         except Exception:
             return False

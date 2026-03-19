@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from insightforge.llm.base import LLMProvider, LLMRequest
@@ -24,6 +25,8 @@ _USER_TEMPLATE = (
     "Score:"
 )
 
+DEFAULT_PARALLEL_WORKERS = 4
+
 
 def run(
     chunk_batch: ChunkBatch,
@@ -33,6 +36,7 @@ def run(
     llm_weight: float = 0.7,
     visual_weight: float = 0.3,
     batch_size: int = 5,
+    parallel_workers: int = DEFAULT_PARALLEL_WORKERS,
 ) -> list[ScoredChunk]:
     """Score all chunks by importance using LLM + optional visual signal.
 
@@ -44,15 +48,24 @@ def run(
         llm_weight: Weight of LLM score in composite.
         visual_weight: Weight of visual score in composite.
         batch_size: Number of chunks per LLM batch (future: batch prompting).
+        parallel_workers: Number of concurrent LLM scoring threads.
 
     Returns:
         List of ScoredChunk objects for all chunks.
     """
     visual_scores = _compute_visual_scores(chunk_batch, frame_set)
 
+    # Score chunks in parallel using thread pool
+    chunks = chunk_batch.chunks
+    if parallel_workers > 1 and len(chunks) > 1:
+        logger.info("Scoring %d chunks with %d parallel workers", len(chunks), parallel_workers)
+        with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+            llm_scores = list(executor.map(lambda c: _score_chunk_llm(c, llm), chunks))
+    else:
+        llm_scores = [_score_chunk_llm(c, llm) for c in chunks]
+
     scored: list[ScoredChunk] = []
-    for chunk in chunk_batch.chunks:
-        llm_score = _score_chunk_llm(chunk, llm)
+    for chunk, llm_score in zip(chunks, llm_scores):
         vis_score = visual_scores.get(chunk.chunk_id, 0.0)
 
         sc = ScoredChunk(

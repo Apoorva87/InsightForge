@@ -6,6 +6,7 @@ import base64
 import json
 import mimetypes
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -211,6 +212,14 @@ class VisionRerankerError(Exception):
 
 
 def _image_as_data_url(path: Path) -> str:
+    """Convert image to data URL, caching results to avoid re-encoding the same file."""
+    return _image_as_data_url_cached(str(path))
+
+
+@lru_cache(maxsize=256)
+def _image_as_data_url_cached(path_str: str) -> str:
+    """LRU-cached base64 encoding keyed by file path string."""
+    path = Path(path_str)
     mime_type, _ = mimetypes.guess_type(path.name)
     if not mime_type:
         mime_type = "image/jpeg"

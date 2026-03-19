@@ -16,7 +16,7 @@ def run(
     metadata: VideoMetadata,
     video_path: Path,
     prefer_manual: bool = True,
-    whisper_model: str = "base",
+    whisper_model: str = "distil-medium.en",
     language: Optional[str] = None,
 ) -> TranscriptResult:
     """Extract a timestamped transcript.
@@ -103,11 +103,17 @@ def _transcribe_whisper(
     segments_iter, info = model.transcribe(
         str(video_path),
         language=language,
-        beam_size=5,
+        beam_size=1,         # greedy decoding: ~3-5x faster than beam_size=5, minimal quality loss
+        vad_filter=True,     # skip silence/non-speech — major speedup on long videos
+        vad_parameters={
+            "min_silence_duration_ms": 500,
+        },
     )
     detected_lang = info.language
+    total_duration = info.duration
 
     segments = []
+    last_log_time = 0.0
     for seg in segments_iter:
         segments.append(
             TranscriptSegment(
@@ -117,6 +123,14 @@ def _transcribe_whisper(
                 confidence=seg.avg_logprob,
             )
         )
+        # Progress logging every 60 seconds of audio processed
+        if seg.end - last_log_time >= 60.0:
+            last_log_time = seg.end
+            pct = (seg.end / total_duration * 100) if total_duration > 0 else 0
+            logger.info(
+                "Whisper progress: %.0f%% (%d segments, %.0fs / %.0fs)",
+                pct, len(segments), seg.end, total_duration,
+            )
 
     logger.info(
         "Whisper transcription complete: %d segments, language=%s",

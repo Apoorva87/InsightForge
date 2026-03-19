@@ -1,6 +1,6 @@
 transcript:
   prefer_manual: true
-  whisper_model: medium  # upgraded for better technical vocab in educational mode
+  whisper_model: distil-large-v3  # distilled Whisper: faster than medium with equal/better accuracy
 
 chunking:
   strategy: hybrid

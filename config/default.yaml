@@ -18,7 +18,7 @@ llm:
 
 transcript:
   prefer_manual: true               # prefer YouTube's own subtitles when available
-  whisper_model: base               # tiny | base | small | medium | large
+  whisper_model: distil-medium.en    # distil-medium.en | distil-large-v3 | base | small | medium | large
   language: null                    # null = auto-detect
 
 chunking:

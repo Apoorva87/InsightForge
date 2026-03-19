@@ -150,6 +150,7 @@ def run(job: VideoJob) -> FinalOutput:
                 llm_weight=importance_cfg.get("llm_weight", 0.7),
                 visual_weight=importance_cfg.get("visual_weight", 0.3),
                 batch_size=importance_cfg.get("batch_size", 5),
+                parallel_workers=config.get("llm_processing", {}).get("parallel_workers", 4),
             )
 
         for name, future in futures.items():
@@ -512,16 +513,14 @@ def _apply_educational_whisper_override(config: dict) -> dict:
     transcript_cfg = {**config.get("transcript", {})}
     config["transcript"] = transcript_cfg
 
-    current_model = transcript_cfg.get("whisper_model", "base")
-    # Upgrade hierarchy: tiny < base < small < medium < large
-    upgrade_order = ["tiny", "base", "small", "medium", "large"]
-    current_rank = upgrade_order.index(current_model) if current_model in upgrade_order else -1
-    target_rank = upgrade_order.index("medium")
-
-    if current_rank < target_rank:
-        transcript_cfg["whisper_model"] = "medium"
+    current_model = transcript_cfg.get("whisper_model", "distil-medium.en")
+    # distil-large-v3 is the target for educational: faster than medium, better accuracy
+    # Only upgrade if current model is weaker than distil-large-v3
+    no_upgrade_models = {"distil-large-v3", "large", "large-v2", "large-v3"}
+    if current_model not in no_upgrade_models:
+        transcript_cfg["whisper_model"] = "distil-large-v3"
         logger.debug(
-            "Educational mode: upgraded Whisper model from '%s' to 'medium' for better technical vocab",
+            "Educational mode: upgraded Whisper model from '%s' to 'distil-large-v3'",
             current_model,
         )
 
