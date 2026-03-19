@@ -90,7 +90,7 @@ def _transcribe_whisper(
         TranscriptResult from Whisper output.
     """
     try:
-        from faster_whisper import WhisperModel, BatchedInferencePipeline  # type: ignore[import]
+        from faster_whisper import WhisperModel  # type: ignore[import]
     except ImportError as exc:
         raise ImportError(
             "faster-whisper is required for local transcription. "
@@ -100,12 +100,9 @@ def _transcribe_whisper(
     logger.info("Loading Whisper model: %s", model_size)
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
-    # Use BatchedInferencePipeline for 2-3x speedup on long audio.
-    # It parallelizes VAD-segmented chunks through the model internally.
-    batched_model = BatchedInferencePipeline(model=model)
-    logger.info("Using batched inference pipeline (batch_size=16)")
-
-    segments_iter, info = batched_model.transcribe(
+    # Sequential mode is faster than BatchedInferencePipeline on CPU/int8.
+    # Benchmarked: sequential 12.4x realtime vs batched bs=16 at 3.3x realtime.
+    segments_iter, info = model.transcribe(
         str(video_path),
         language=language,
         beam_size=1,         # greedy decoding: ~3-5x faster than beam_size=5, minimal quality loss
@@ -113,7 +110,6 @@ def _transcribe_whisper(
         vad_parameters={
             "min_silence_duration_ms": 500,
         },
-        batch_size=16,       # process 16 VAD segments simultaneously
     )
     detected_lang = info.language
     total_duration = info.duration
