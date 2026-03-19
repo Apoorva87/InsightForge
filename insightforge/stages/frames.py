@@ -26,12 +26,14 @@ def run(
     video_path: Path,
     output_dir: Path,
     chunk_batch: ChunkBatch,
-    extraction_mode: str = "scene_change",
+    extraction_mode: str = "dense",
     interval_seconds: float = 30.0,
     scene_diff_threshold: float = 0.3,
     top_k: int = 20,
     max_width: int = 1280,
     quality: int = 2,
+    frame_interval_seconds: float = 4.0,
+    frame_change_threshold: int = 5,
 ) -> FrameSet:
     """Extract frames from the video using the configured strategy.
 
@@ -60,7 +62,12 @@ def run(
     logger.info("Extracting frames (mode=%s) to %s", extraction_mode, output_dir)
 
     # ---- 1. Primary extraction ----
-    if extraction_mode == "interval":
+    if extraction_mode == "dense":
+        raw = ffmpeg_utils.extract_frames_dense(
+            video_path, output_dir, frame_interval_seconds,
+            frame_change_threshold, max_width, quality,
+        )
+    elif extraction_mode == "interval":
         raw = ffmpeg_utils.extract_frames_interval(
             video_path, output_dir, interval_seconds, max_width, quality
         )

@@ -6,6 +6,7 @@ import base64
 import json
 import mimetypes
 import time
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -103,6 +104,104 @@ class VisionReranker:
         logger.debug("Frame classification completed in %.0fms for %d frames", elapsed_ms, len(frames))
 
         return _parse_classification_response(text, valid_ids={fid for fid, _ in frames})
+
+    # ------------------------------------------------------------------
+    # Combined enrich: classify + describe + OCR with transcript context
+    # ------------------------------------------------------------------
+
+    def enrich_frames(
+        self,
+        frames: list[tuple[str, Path, str]],
+        batch_size: int = 6,
+        parallel_batches: int = 4,
+    ) -> dict[str, dict]:
+        """Classify, describe, and OCR frames in one pass with transcript context.
+
+        Args:
+            frames: List of (frame_id, path, transcript_context) tuples.
+                transcript_context is ~200 chars of transcript before this frame's timestamp.
+            batch_size: Frames per VLM batch call.
+            parallel_batches: Max concurrent batch requests.
+
+        Returns:
+            Dict keyed by frame_id with:
+                {"frame_type": str, "content_score": float, "description": str, "ocr_text": str}
+        """
+        if not frames:
+            return {}
+
+        batches = [frames[i:i + batch_size] for i in range(0, len(frames), batch_size)]
+        results: dict[str, dict] = {}
+
+        if parallel_batches > 1 and len(batches) > 1:
+            logger.info(
+                "Enriching %d frames in %d batches (%d parallel)",
+                len(frames), len(batches), parallel_batches,
+            )
+            with ThreadPoolExecutor(max_workers=parallel_batches) as executor:
+                batch_results = list(executor.map(self._enrich_batch, batches))
+            for batch_result in batch_results:
+                results.update(batch_result)
+        else:
+            for batch in batches:
+                results.update(self._enrich_batch(batch))
+
+        logger.info("VLM enriched %d/%d frames", len(results), len(frames))
+        return results
+
+    def _enrich_batch(self, frames: list[tuple[str, Path, str]]) -> dict[str, dict]:
+        """Enrich a single batch of frames with classification + description + OCR."""
+        if not frames:
+            return {}
+
+        frame_sections = []
+        for frame_id, _, transcript_ctx in frames:
+            ctx = f'\nTranscript context: "{transcript_ctx}"' if transcript_ctx else ""
+            frame_sections.append(f"Frame {frame_id}{ctx}")
+
+        prompt = (
+            "For each video screenshot below, analyze what is visually shown. "
+            "I provide surrounding transcript text for context.\n\n"
+            "For each frame, determine:\n"
+            "1. frame_type: one of slide, diagram, code, equation, chart, table, "
+            "whiteboard, talking_head, transition, other\n"
+            "2. content_score: 0.0 (no educational value) to 1.0 (rich content)\n"
+            "3. description: 1-2 sentences describing what is VISUALLY shown\n"
+            "4. ocr_text: Extract any readable text, equations, or code visible in the frame. "
+            "For equations use LaTeX notation (e.g. $E = mc^2$). For code, preserve formatting. "
+            "Clean up for readability. Empty string if no readable text.\n\n"
+            f"Frame ids: {', '.join(fid for fid, _, _ in frames)}\n\n"
+            "Return ONLY valid JSON:\n"
+            '{"frames": [{"id": "frame_id", "frame_type": "slide", '
+            '"content_score": 0.85, "description": "A slide showing...", '
+            '"ocr_text": "readable text here"}]}'
+        )
+
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        for i, (frame_id, path, _) in enumerate(frames):
+            content.append({"type": "text", "text": frame_sections[i]})
+            content.append(
+                {"type": "image_url", "image_url": {"url": _image_as_data_url(path)}}
+            )
+
+        start = time.monotonic()
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=250 * len(frames),
+                temperature=0.0,
+                timeout=self.timeout,
+            )
+        except self._openai.OpenAIError as exc:
+            logger.warning("Frame enrichment failed: %s", exc)
+            return {}
+
+        elapsed_ms = (time.monotonic() - start) * 1000
+        text = response.choices[0].message.content or ""
+        logger.debug("Frame enrichment completed in %.0fms for %d frames", elapsed_ms, len(frames))
+
+        return _parse_enrich_response(text, valid_ids={fid for fid, _, _ in frames})
 
     # ------------------------------------------------------------------
     # Per-section reranking with descriptions (Improvements #5 + existing)
@@ -290,6 +389,33 @@ def _parse_classification_response(text: str, valid_ids: set[str]) -> dict[str, 
             "frame_type": entry.get("frame_type", "other"),
             "content_score": max(0.0, min(1.0, float(entry.get("content_score", 0.5)))),
             "description": entry.get("description", ""),
+        }
+    return results
+
+
+def _parse_enrich_response(text: str, valid_ids: set[str]) -> dict[str, dict]:
+    """Parse combined enrich response (classify + describe + OCR)."""
+    text = text.strip()
+    payload = _try_parse_json(text)
+    if not payload:
+        return {}
+
+    frames_list = payload.get("frames", [])
+    if not isinstance(frames_list, list):
+        return {}
+
+    results: dict[str, dict] = {}
+    for entry in frames_list:
+        if not isinstance(entry, dict):
+            continue
+        frame_id = entry.get("id", "")
+        if frame_id not in valid_ids:
+            continue
+        results[frame_id] = {
+            "frame_type": entry.get("frame_type", "other"),
+            "content_score": max(0.0, min(1.0, float(entry.get("content_score", 0.5)))),
+            "description": entry.get("description", ""),
+            "ocr_text": entry.get("ocr_text", ""),
         }
     return results
 

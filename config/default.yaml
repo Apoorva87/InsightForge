@@ -29,8 +29,10 @@ chunking:
 
 frames:
   enabled: true
-  extraction_mode: scene_change     # interval | scene_change | timestamp_aligned
+  extraction_mode: dense            # dense | interval | scene_change | timestamp_aligned
   interval_seconds: 30.0
+  frame_interval_seconds: 4.0       # dense mode: capture every N seconds
+  frame_change_threshold: 5         # dense mode: pHash Hamming distance threshold (lower = more frames)
   scene_diff_threshold: 0.2
   top_k: 30
   output_quality: 2                 # ffmpeg -q:v, 1=best, 31=worst
@@ -40,6 +42,9 @@ frames:
   vlm_base_url: http://localhost:1234/v1
   vlm_model: qwen/qwen3-vl-8b
   vlm_max_candidates: 4
+  vlm_enrich_batch_size: 6          # frames per VLM enrichment batch
+  vlm_parallel_batches: 4           # max concurrent VLM batch requests
+  vlm_transcript_context_chars: 200 # chars of transcript context per frame for VLM
 
 llm_processing:
   max_tokens: 8192                  # token budget for note generation per chunk

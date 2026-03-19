@@ -19,6 +19,7 @@ class Frame(BaseModel):
     nearest_chunk_id: Optional[str] = None     # linked chunk after alignment
     description: Optional[str] = None          # VLM-generated description of visual content
     frame_type: Optional[str] = None           # VLM-classified: slide/diagram/code/talking_head/transition/other
+    ocr_text: Optional[str] = None             # VLM-extracted readable text/equations/code from frame
 
     @property
     def timestamp_str(self) -> str:

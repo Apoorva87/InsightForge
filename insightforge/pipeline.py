@@ -129,12 +129,14 @@ def run(job: VideoJob) -> FinalOutput:
                 video_path=video_path,
                 output_dir=work_frames_dir,
                 chunk_batch=chunk_batch,
-                extraction_mode=frames_cfg.get("extraction_mode", "scene_change"),
+                extraction_mode=frames_cfg.get("extraction_mode", "dense"),
                 interval_seconds=frames_cfg.get("interval_seconds", 30.0),
                 scene_diff_threshold=frames_cfg.get("scene_diff_threshold", 0.3),
                 top_k=frames_cfg.get("top_k", 20),
                 max_width=frames_cfg.get("max_width", 1280),
                 quality=frames_cfg.get("output_quality", 2),
+                frame_interval_seconds=frames_cfg.get("frame_interval_seconds", 4.0),
+                frame_change_threshold=frames_cfg.get("frame_change_threshold", 5),
             )
 
         if skip_importance_llm:
@@ -175,9 +177,9 @@ def run(job: VideoJob) -> FinalOutput:
             visual_weight=importance_cfg.get("visual_weight", 0.3),
         )
 
-    # VLM frame classification — replace JPEG-size heuristic with VLM-based scoring
+    # VLM frame enrichment — classify + describe + OCR with transcript context
     if frame_set and frames_cfg.get("vlm_rerank_enabled", True):
-        frame_set = _classify_frames_with_vlm(frame_set, frames_cfg)
+        frame_set = _enrich_frames_with_vlm(frame_set, frames_cfg, aligned_transcript)
 
     # Filter chunks by detail level
     filtered = importance.filter_by_detail(
@@ -557,8 +559,12 @@ def _apply_job_overrides(config: dict, job: VideoJob) -> dict:
     return config
 
 
-def _classify_frames_with_vlm(frame_set: FrameSet, frames_cfg: dict) -> FrameSet:
-    """Use VLM to classify frames by type and replace JPEG-size content_score heuristic."""
+def _enrich_frames_with_vlm(
+    frame_set: FrameSet,
+    frames_cfg: dict,
+    transcript,
+) -> FrameSet:
+    """Use VLM to classify, describe, and OCR frames with transcript context."""
     from insightforge.utils.vision import VisionReranker
 
     try:
@@ -567,30 +573,83 @@ def _classify_frames_with_vlm(frame_set: FrameSet, frames_cfg: dict) -> FrameSet
             model=frames_cfg.get("vlm_model", "qwen/qwen3-vl-8b"),
         )
     except Exception as exc:
-        logger.warning("VLM frame classification unavailable: %s", exc)
+        logger.warning("VLM frame enrichment unavailable: %s", exc)
         return frame_set
 
-    frame_pairs = [(f.frame_id, f.path) for f in frame_set.frames if f.path.exists()]
-    if not frame_pairs:
+    # Build (frame_id, path, transcript_context) tuples
+    max_context_chars = frames_cfg.get("vlm_transcript_context_chars", 200)
+    frame_tuples = []
+    for frame in frame_set.frames:
+        if not frame.path.exists():
+            continue
+        ctx = _get_transcript_context(transcript, frame.timestamp, max_context_chars)
+        frame_tuples.append((frame.frame_id, frame.path, ctx))
+
+    if not frame_tuples:
         return frame_set
 
     try:
-        classifications = reranker.classify_frames(frame_pairs, batch_size=8)
+        enrichments = reranker.enrich_frames(
+            frame_tuples,
+            batch_size=frames_cfg.get("vlm_enrich_batch_size", 6),
+            parallel_batches=frames_cfg.get("vlm_parallel_batches", 4),
+        )
     except Exception as exc:
-        logger.warning("VLM frame classification failed: %s; keeping JPEG heuristic scores", exc)
+        logger.warning("VLM frame enrichment failed: %s; keeping heuristic scores", exc)
         return frame_set
 
     updated_count = 0
     for frame in frame_set.frames:
-        info = classifications.get(frame.frame_id)
+        info = enrichments.get(frame.frame_id)
         if info:
             frame.content_score = info["content_score"]
             frame.frame_type = info["frame_type"]
             frame.description = info.get("description", "")
+            frame.ocr_text = info.get("ocr_text", "")
             updated_count += 1
 
-    logger.info("VLM classified %d/%d frames", updated_count, len(frame_set.frames))
+    logger.info("VLM enriched %d/%d frames (classify + describe + OCR)", updated_count, len(frame_set.frames))
     return frame_set
+
+
+def _get_transcript_context(transcript, timestamp: float, max_chars: int = 200) -> str:
+    """Get transcript text around a frame's timestamp for VLM context."""
+    if not transcript or not transcript.segments:
+        return ""
+
+    segments = transcript.segments
+    # Binary search for the segment nearest to this timestamp
+    best_idx = 0
+    best_dist = abs(segments[0].start - timestamp)
+    lo, hi = 0, len(segments) - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        dist = abs(segments[mid].start - timestamp)
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = mid
+        if segments[mid].start < timestamp:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    # Gather text from surrounding segments
+    parts: list[str] = []
+    total = 0
+    # Go backward from best_idx to collect preceding context
+    for i in range(best_idx, max(best_idx - 5, -1), -1):
+        text = segments[i].text.strip()
+        if total + len(text) > max_chars:
+            remaining = max_chars - total
+            if remaining > 20:
+                parts.insert(0, text[-remaining:])
+            break
+        parts.insert(0, text)
+        total += len(text)
+        if total >= max_chars:
+            break
+
+    return " ".join(parts)
 
 
 def _viewer_config(config: dict, llm_router: Optional["LLMRouter"] = None) -> dict:

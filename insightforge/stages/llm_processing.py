@@ -66,6 +66,7 @@ Coherence guidance:
 Chunk summaries:
 {outline}
 {raw_transcript_context}
+{frame_ocr_context}
 Produce a JSON object with these exact keys:
 - "heading": concise section heading (max 8 words)
 - "summary": 1-3 sentence summary paragraph
@@ -94,6 +95,7 @@ Coherence guidance:
 Sub-section summaries:
 {outline}
 {raw_transcript_context}
+{frame_ocr_context}
 Produce a JSON object with these exact keys:
 - "heading": concise topic heading (max 8 words)
 - "summary": 1-3 sentence summary paragraph
@@ -482,6 +484,9 @@ def _generate_topic_section(
     # Build truncated raw transcript for topic-level synthesis (Improvement #8)
     raw_transcript = _build_raw_transcript_for_topic(topic, max_chars=2000)
 
+    # Collect OCR texts from frames in this topic's time range
+    topic_ocr = _collect_frame_ocr(frame_set, topic.start, topic.end)
+
     if len(summaries) <= max_chunk_summaries_per_subsection:
         data = _synthesize_section_data(
             prompt_template=_TOPIC_SECTION_TEMPLATE,
@@ -493,6 +498,7 @@ def _generate_topic_section(
             coherence_guidance=coherence_guidance,
             fallback=_fallback_topic_data(summaries),
             raw_transcript=raw_transcript,
+            frame_ocr_texts=topic_ocr,
         )
         return NoteSection(
             section_id=f"section_{topic_index:04d}",
@@ -524,6 +530,7 @@ def _generate_topic_section(
     subsections: list[NoteSection] = []
     for sub_index, subgroup in enumerate(subgroup_spans):
         subgroup_raw = _build_raw_transcript_for_topic(subgroup, max_chars=1500)
+        subgroup_ocr = _collect_frame_ocr(frame_set, subgroup.start, subgroup.end)
         subgroup_data = _synthesize_section_data(
             prompt_template=_TOPIC_SECTION_TEMPLATE,
             timestamp=f"{_format_time(subgroup.start)}-{_format_time(subgroup.end)}",
@@ -534,6 +541,7 @@ def _generate_topic_section(
             coherence_guidance=coherence_guidance,
             fallback=_fallback_topic_data(subgroup.summaries),
             raw_transcript=subgroup_raw,
+            frame_ocr_texts=subgroup_ocr,
         )
         subsections.append(
             NoteSection(
@@ -580,6 +588,7 @@ def _generate_topic_section(
             "summary": " ".join(sub.summary for sub in subsections[:2]).strip(),
             "key_points": [sub.heading for sub in subsections[:5]],
         },
+        frame_ocr_texts=topic_ocr,
     )
 
     return NoteSection(
@@ -620,6 +629,7 @@ def _synthesize_section_data(
     coherence_guidance: str,
     fallback: dict,
     raw_transcript: str = "",
+    frame_ocr_texts: Optional[list[str]] = None,
 ) -> dict:
     is_educational = _is_educational(explanation_style)
     # Build raw transcript context block if available
@@ -629,6 +639,17 @@ def _synthesize_section_data(
             "\nRaw transcript excerpt (use this to recover details the summaries may have compressed away):\n"
             f"{raw_transcript}\n"
         )
+    # Build frame OCR context block
+    ocr_context = ""
+    if frame_ocr_texts:
+        ocr_parts = [t for t in frame_ocr_texts if t.strip()]
+        if ocr_parts:
+            ocr_context = (
+                "\nText/equations/code visible in video frames for this section "
+                "(use to add accuracy to formulas, code, and key terms):\n"
+                + "\n".join(f"- {t}" for t in ocr_parts[:6])
+                + "\n"
+            )
     request = LLMRequest(
         prompt=prompt_template.format(
             timestamp=timestamp,
@@ -637,6 +658,7 @@ def _synthesize_section_data(
             coherence_guidance=coherence_guidance,
             educational_fields=_EDUCATIONAL_SECTION_FIELDS if is_educational else "",
             raw_transcript_context=raw_context,
+            frame_ocr_context=ocr_context,
         ),
         system=_SECTION_SYSTEM_PROMPT,
         max_tokens=max_tokens,
@@ -676,6 +698,7 @@ def _generate_leaf_section(
         coherence_guidance=coherence_guidance,
         educational_fields=_EDUCATIONAL_SECTION_FIELDS if is_educational else "",
         raw_transcript_context="",
+        frame_ocr_context="",
     )
     request = LLMRequest(
         prompt=prompt,
@@ -906,6 +929,21 @@ def _build_raw_transcript_for_topic(topic: TopicSpan, max_chars: int = 2000) -> 
         parts.append(f"[{sc.chunk.timestamp_str}] {text}")
         total_chars += len(text)
     return "\n".join(parts) if parts else ""
+
+
+def _collect_frame_ocr(
+    frame_set: Optional[FrameSet],
+    start: float,
+    end: float,
+) -> list[str]:
+    """Collect OCR texts from frames within a time range."""
+    if not frame_set:
+        return []
+    ocr_texts: list[str] = []
+    for frame in frame_set.frames:
+        if start - 3.0 <= frame.timestamp <= end + 3.0 and frame.ocr_text:
+            ocr_texts.append(frame.ocr_text.strip())
+    return ocr_texts
 
 
 def _compact_neighbor_text(text: str, limit: int = 180) -> str:

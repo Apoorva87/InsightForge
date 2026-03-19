@@ -84,6 +84,7 @@ def _serialize_section(
                     "content_score": frame.content_score or 0.0,
                     "frame_type": frame.frame_type or "other",
                     "description": frame.description or "",
+                    "ocr_text": frame.ocr_text or "",
                 }
             )
 
@@ -674,6 +675,145 @@ def _build_html(data: dict) -> str:
       line-height: 1.5;
       padding: 18px;
     }}
+    /* Lightbox overlay */
+    .lightbox-overlay {{
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: rgba(0, 0, 0, 0.88);
+      backdrop-filter: blur(8px);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      cursor: pointer;
+    }}
+    .lightbox-overlay.open {{
+      display: flex;
+    }}
+    .lightbox-overlay img {{
+      max-width: 92vw;
+      max-height: 82vh;
+      object-fit: contain;
+      border-radius: 12px;
+      cursor: default;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }}
+    .lightbox-caption {{
+      color: #e0dcd4;
+      font-size: 0.92rem;
+      text-align: center;
+      max-width: 80vw;
+      line-height: 1.5;
+    }}
+    .lightbox-ocr {{
+      color: #c8c4bc;
+      font-size: 0.82rem;
+      text-align: left;
+      max-width: 70vw;
+      max-height: 18vh;
+      overflow: auto;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.08);
+      border-radius: 10px;
+      font-family: var(--mono);
+      white-space: pre-wrap;
+    }}
+    .lightbox-nav {{
+      position: fixed;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 1001;
+      background: rgba(255,255,255,0.15);
+      border: none;
+      color: #fff;
+      font-size: 2rem;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 120ms ease;
+      padding: 0;
+    }}
+    .lightbox-nav:hover {{
+      background: rgba(255,255,255,0.3);
+    }}
+    .lightbox-prev {{ left: 16px; }}
+    .lightbox-next {{ right: 16px; }}
+    .lightbox-close {{
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 1001;
+      background: rgba(255,255,255,0.15);
+      border: none;
+      color: #fff;
+      font-size: 1.5rem;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }}
+    .lightbox-close:hover {{
+      background: rgba(255,255,255,0.3);
+    }}
+    .lightbox-counter {{
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.6);
+      font-size: 0.82rem;
+      font-family: var(--mono);
+    }}
+    /* Frame type badges */
+    .frame-badge {{
+      display: inline-block;
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: rgba(12,108,102,0.12);
+      color: var(--accent);
+      margin-left: 6px;
+      vertical-align: middle;
+    }}
+    /* Larger inline thumbnails */
+    .annotated-point img {{
+      max-width: 500px;
+    }}
+    .thumb img {{
+      min-height: 160px;
+    }}
+    /* OCR text below frames */
+    .frame-ocr {{
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: var(--muted);
+      background: rgba(0,0,0,0.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-top: 4px;
+      white-space: pre-wrap;
+      max-height: 120px;
+      overflow: auto;
+    }}
+    .frame-ocr.code-ocr {{
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-color: rgba(0,0,0,0.2);
+    }}
     @media (max-width: 1180px) {{
       .app {{ grid-template-columns: 260px minmax(0, 1fr); }}
       .rightpane {{ grid-column: 1 / -1; min-height: 28vh; }}
@@ -770,6 +910,16 @@ def _build_html(data: dict) -> str:
       </div>
     </aside>
   </div>
+  <!-- Lightbox overlay -->
+  <div class="lightbox-overlay" id="lightbox">
+    <button class="lightbox-close" id="lightbox-close" aria-label="Close">&times;</button>
+    <button class="lightbox-nav lightbox-prev" id="lightbox-prev" aria-label="Previous">&lsaquo;</button>
+    <button class="lightbox-nav lightbox-next" id="lightbox-next" aria-label="Next">&rsaquo;</button>
+    <img id="lightbox-img" src="" alt="" />
+    <div class="lightbox-caption" id="lightbox-caption"></div>
+    <div class="lightbox-ocr" id="lightbox-ocr" hidden></div>
+    <div class="lightbox-counter" id="lightbox-counter"></div>
+  </div>
   <script>
     const DATA = {payload};
     const flatSections = [];
@@ -804,6 +954,77 @@ def _build_html(data: dict) -> str:
     let chatHistory = [];
     let transcriptTrackingHandle = null;
     let userSelectedSectionUntil = 0;
+
+    // Lightbox state
+    const lightboxOverlay = document.getElementById("lightbox");
+    const lightboxImg = document.getElementById("lightbox-img");
+    const lightboxCaption = document.getElementById("lightbox-caption");
+    const lightboxOcr = document.getElementById("lightbox-ocr");
+    const lightboxCounter = document.getElementById("lightbox-counter");
+    const lightboxClose = document.getElementById("lightbox-close");
+    const lightboxPrev = document.getElementById("lightbox-prev");
+    const lightboxNext = document.getElementById("lightbox-next");
+    let lightboxFrames = [];
+    let lightboxIndex = 0;
+
+    function openLightbox(frames, index) {{
+      lightboxFrames = frames;
+      lightboxIndex = Math.max(0, Math.min(index, frames.length - 1));
+      showLightboxFrame();
+      lightboxOverlay.classList.add("open");
+      document.body.style.overflow = "hidden";
+    }}
+
+    function closeLightbox() {{
+      lightboxOverlay.classList.remove("open");
+      document.body.style.overflow = "";
+      lightboxFrames = [];
+    }}
+
+    function showLightboxFrame() {{
+      if (!lightboxFrames.length) return;
+      const frame = lightboxFrames[lightboxIndex];
+      lightboxImg.src = frame.path;
+      lightboxImg.alt = frame.caption || "";
+      lightboxCaption.textContent = frame.caption
+        ? `${{frame.timestamp_str}} · ${{frame.caption}}`
+        : frame.timestamp_str;
+      if (frame.ocr_text) {{
+        lightboxOcr.textContent = frame.ocr_text;
+        lightboxOcr.hidden = false;
+        lightboxOcr.className = isCodeLike(frame.ocr_text) ? "lightbox-ocr code-ocr" : "lightbox-ocr";
+      }} else {{
+        lightboxOcr.hidden = true;
+      }}
+      lightboxCounter.textContent = `${{lightboxIndex + 1}} / ${{lightboxFrames.length}}`;
+      lightboxPrev.style.display = lightboxFrames.length > 1 ? "" : "none";
+      lightboxNext.style.display = lightboxFrames.length > 1 ? "" : "none";
+    }}
+
+    function lightboxStep(delta) {{
+      if (!lightboxFrames.length) return;
+      lightboxIndex = (lightboxIndex + delta + lightboxFrames.length) % lightboxFrames.length;
+      showLightboxFrame();
+    }}
+
+    function isCodeLike(text) {{
+      if (!text) return false;
+      const codeIndicators = ["{{", "}}", "=>", "->", "def ", "class ", "function ", "import ", "return ", "const ", "let ", "var "];
+      return codeIndicators.some(indicator => text.includes(indicator));
+    }}
+
+    lightboxClose.addEventListener("click", (e) => {{ e.stopPropagation(); closeLightbox(); }});
+    lightboxPrev.addEventListener("click", (e) => {{ e.stopPropagation(); lightboxStep(-1); }});
+    lightboxNext.addEventListener("click", (e) => {{ e.stopPropagation(); lightboxStep(1); }});
+    lightboxImg.addEventListener("click", (e) => e.stopPropagation());
+    lightboxOcr.addEventListener("click", (e) => e.stopPropagation());
+    lightboxOverlay.addEventListener("click", closeLightbox);
+    document.addEventListener("keydown", (e) => {{
+      if (!lightboxOverlay.classList.contains("open")) return;
+      if (e.key === "Escape") closeLightbox();
+      else if (e.key === "ArrowLeft") lightboxStep(-1);
+      else if (e.key === "ArrowRight") lightboxStep(1);
+    }});
 
     const buttonConfigs = [
       {{ element: jumpStart, icon: "↦", title: "Jump to section start" }},
@@ -911,7 +1132,9 @@ def _build_html(data: dict) -> str:
       annotatedContainer.hidden = !showAnnotatedFrames;
       annotatedContainer.innerHTML = "";
       if (showAnnotatedFrames) {{
-        buildAnnotatedPoints(currentSection).forEach(item => {{
+        const annotatedData = buildAnnotatedPoints(currentSection);
+        const annotatedFrameList = annotatedData.filter(item => item.frame).map(item => item.frame);
+        annotatedData.forEach(item => {{
           const block = document.createElement("div");
           block.className = "annotated-point";
           const para = document.createElement("p");
@@ -922,13 +1145,22 @@ def _build_html(data: dict) -> str:
             const img = document.createElement("img");
             img.src = item.frame.path;
             img.alt = `${{currentSection.heading}} at ${{item.frame.timestamp_str}}`;
-            img.addEventListener("click", () => seekTo(item.frame.timestamp, true));
+            const frameIdx = annotatedFrameList.indexOf(item.frame);
+            img.addEventListener("click", () => openLightbox(annotatedFrameList, frameIdx));
             const caption = document.createElement("figcaption");
-            caption.textContent = item.frame.caption
-              ? `${{item.frame.timestamp_str}} · ${{item.frame.caption}}`
-              : `Snapshot ${{item.frame.timestamp_str}}`;
+            const badge = item.frame.frame_type && item.frame.frame_type !== "other"
+              ? ` <span class="frame-badge">${{escapeHtml(item.frame.frame_type)}}</span>` : "";
+            caption.innerHTML = item.frame.caption
+              ? `${{escapeHtml(item.frame.timestamp_str)}} · ${{escapeHtml(item.frame.caption)}}${{badge}}`
+              : `Snapshot ${{escapeHtml(item.frame.timestamp_str)}}${{badge}}`;
             figure.appendChild(img);
             figure.appendChild(caption);
+            if (item.frame.ocr_text) {{
+              const ocr = document.createElement("div");
+              ocr.className = isCodeLike(item.frame.ocr_text) ? "frame-ocr code-ocr" : "frame-ocr";
+              ocr.textContent = item.frame.ocr_text;
+              figure.appendChild(ocr);
+            }}
             block.appendChild(figure);
           }}
           annotatedContainer.appendChild(block);
@@ -953,19 +1185,28 @@ def _build_html(data: dict) -> str:
       const gallery = document.getElementById("current-gallery");
       gallery.innerHTML = "";
       gallery.hidden = showAnnotatedFrames;
-      getEffectiveFrames(currentSection).forEach(frame => {{
+      const effectiveFrames = getEffectiveFrames(currentSection);
+      effectiveFrames.forEach((frame, idx) => {{
         const card = document.createElement("div");
         card.className = "thumb";
         const img = document.createElement("img");
         img.src = frame.path;
         img.alt = `${{currentSection.heading}} at ${{frame.timestamp_str}}`;
-        img.addEventListener("click", () => seekTo(frame.timestamp, true));
+        img.addEventListener("click", () => openLightbox(effectiveFrames, idx));
         const stamp = document.createElement("time");
-        stamp.textContent = frame.caption
-          ? `${{frame.timestamp_str}} · ${{frame.caption}}`
-          : frame.timestamp_str;
+        const badge = frame.frame_type && frame.frame_type !== "other"
+          ? `<span class="frame-badge">${{escapeHtml(frame.frame_type)}}</span>` : "";
+        stamp.innerHTML = frame.caption
+          ? `${{escapeHtml(frame.timestamp_str)}} · ${{escapeHtml(frame.caption)}}${{badge}}`
+          : `${{escapeHtml(frame.timestamp_str)}}${{badge}}`;
         card.appendChild(img);
         card.appendChild(stamp);
+        if (frame.ocr_text) {{
+          const ocr = document.createElement("div");
+          ocr.className = isCodeLike(frame.ocr_text) ? "frame-ocr code-ocr" : "frame-ocr";
+          ocr.textContent = frame.ocr_text;
+          card.appendChild(ocr);
+        }}
         gallery.appendChild(card);
       }});
 

@@ -10,7 +10,8 @@ chunking:
 
 frames:
   enabled: true
-  extraction_mode: scene_change
+  extraction_mode: dense
+  frame_change_threshold: 4         # more sensitive for educational content
   scene_diff_threshold: 0.15
   top_k: 50
   frames_per_section: 4

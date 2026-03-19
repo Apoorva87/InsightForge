@@ -223,40 +223,130 @@ def _render_educational_artifacts(section: NoteSection) -> list[str]:
 def _interleave_frames_with_points(
     section: NoteSection, frames_dir: Optional[Path]
 ) -> list[str]:
-    """Interleave frames between key_points based on timestamp alignment.
+    """Interleave frames between key_points based on keyword matching.
 
-    Strategy: divide the section's time range into equal slots (one per key_point).
-    After each key_point, insert any frames whose timestamps fall in that slot.
+    Strategy: match each frame's description/ocr_text to the most relevant
+    key_point using keyword overlap. Place each frame after its matched point.
+    Unmatched frames go after the last point.
     """
     lines: list[str] = []
     sorted_frames = sorted(section.frames, key=lambda f: f.timestamp)
-    n_points = len(section.key_points)
-    section_start = section.timestamp_start
-    section_end = section.timestamp_end
-    slot_duration = (section_end - section_start) / max(n_points, 1)
+    points = section.key_points
 
-    frame_idx = 0
-    for i, point in enumerate(section.key_points):
+    if not sorted_frames:
+        for point in points:
+            lines.append(f"- {point}")
+        lines.append("")
+        return lines
+
+    # Build keyword-based assignments: frame_index → point_index
+    assignments = _match_frames_to_points(sorted_frames, points)
+
+    # Group frames by assigned point
+    point_frames: dict[int, list[Frame]] = {}
+    unmatched: list[Frame] = []
+    for fi, pi in assignments.items():
+        if pi is not None:
+            point_frames.setdefault(pi, []).append(sorted_frames[fi])
+        else:
+            unmatched.append(sorted_frames[fi])
+
+    for i, point in enumerate(points):
         lines.append(f"- {point}")
-
-        slot_end = section_start + (i + 1) * slot_duration
-        inserted = False
-        while frame_idx < len(sorted_frames):
-            frame = sorted_frames[frame_idx]
-            if frame.timestamp < slot_end or i == n_points - 1:
-                if not inserted:
-                    lines.append("")
-                    inserted = True
-                rel_path = _frame_rel_path(frame, frames_dir)
-                lines.append(f"  ![Frame at {frame.timestamp_str}]({rel_path})")
-                frame_idx += 1
-            else:
-                break
-        if inserted:
+        matched = point_frames.get(i, [])
+        if matched:
             lines.append("")
+            for frame in sorted(matched, key=lambda f: f.timestamp):
+                rel_path = _frame_rel_path(frame, frames_dir)
+                caption = frame.description or f"Frame at {frame.timestamp_str}"
+                lines.append(f"  ![{caption}]({rel_path})")
+                if frame.ocr_text:
+                    lines.extend(_render_ocr_text_md(frame.ocr_text))
+            lines.append("")
+
+    # Append unmatched frames at end
+    if unmatched:
+        lines.append("")
+        for frame in sorted(unmatched, key=lambda f: f.timestamp):
+            rel_path = _frame_rel_path(frame, frames_dir)
+            caption = frame.description or f"Frame at {frame.timestamp_str}"
+            lines.append(f"![{caption}]({rel_path})")
+            if frame.ocr_text:
+                lines.extend(_render_ocr_text_md(frame.ocr_text))
+        lines.append("")
 
     if lines and lines[-1] != "":
         lines.append("")
+    return lines
+
+
+def _match_frames_to_points(
+    frames: list[Frame], points: list[str]
+) -> dict[int, Optional[int]]:
+    """Match frames to key_points by keyword overlap on description + ocr_text."""
+    if not points:
+        return {i: None for i in range(len(frames))}
+
+    def _tokenize(text: str) -> set[str]:
+        stopwords = {
+            "the", "a", "an", "and", "or", "but", "is", "are", "was", "were",
+            "to", "of", "for", "in", "on", "at", "by", "with", "from", "as",
+            "it", "its", "this", "that", "these", "those", "we", "you", "they",
+        }
+        words = set(re.findall(r"[a-zA-Z0-9]{3,}", text.lower()))
+        return words - stopwords
+
+    point_tokens = [_tokenize(p) for p in points]
+    assignments: dict[int, Optional[int]] = {}
+    used_points: set[int] = set()
+
+    for fi, frame in enumerate(frames):
+        frame_text = " ".join(filter(None, [frame.description, frame.ocr_text]))
+        frame_tokens = _tokenize(frame_text)
+        if not frame_tokens:
+            assignments[fi] = None
+            continue
+
+        best_pi = None
+        best_score = 0.0
+        for pi, pt in enumerate(point_tokens):
+            if not pt:
+                continue
+            overlap = len(frame_tokens & pt)
+            union = len(frame_tokens | pt)
+            score = overlap / union if union > 0 else 0.0
+            if score > best_score:
+                best_score = score
+                best_pi = pi
+
+        if best_score >= 0.05 and best_pi is not None:
+            assignments[fi] = best_pi
+        else:
+            assignments[fi] = None
+
+    return assignments
+
+
+def _render_ocr_text_md(ocr_text: str) -> list[str]:
+    """Render OCR text as markdown — detect formulas vs code vs plain text."""
+    lines: list[str] = []
+    text = ocr_text.strip()
+    if not text:
+        return lines
+
+    # Check if it looks like code (has indentation, braces, semicolons, etc.)
+    code_indicators = any(c in text for c in ["{", "}", ";", "def ", "class ", "import ", "=>", "->"])
+    has_latex = "$" in text or "\\" in text
+
+    if code_indicators and not has_latex:
+        lines.append("  ```")
+        lines.append(f"  {text}")
+        lines.append("  ```")
+    elif has_latex:
+        lines.append(f"  > {text}")
+    else:
+        lines.append(f"  > *{text}*")
+    lines.append("")
     return lines
 
 

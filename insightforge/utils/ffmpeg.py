@@ -276,6 +276,87 @@ def generate_audio_summary(
     raise FFmpegError("No TTS method available. Install pyttsx3 or use macOS.")
 
 
+def extract_frames_dense(
+    video_path: Path,
+    output_dir: Path,
+    interval_seconds: float = 4.0,
+    change_threshold: int = 5,
+    max_width: int = 1280,
+    quality: int = 2,
+) -> list[tuple[float, Path]]:
+    """Extract frames at fixed interval, then keep only visually distinct ones via pHash.
+
+    Args:
+        video_path: Path to the video file.
+        output_dir: Directory for output frames.
+        interval_seconds: Seconds between initial frame captures.
+        change_threshold: Min pHash Hamming distance to consider a frame "changed".
+            Lower = more sensitive (keeps more frames). Range 0-64.
+        max_width: Maximum frame width.
+        quality: JPEG quality level.
+
+    Returns:
+        List of (timestamp_seconds, frame_path) tuples for kept frames.
+    """
+    # Step 1: Extract all frames at interval
+    raw = extract_frames_interval(
+        video_path, output_dir, interval_seconds, max_width, quality
+    )
+    if len(raw) <= 1:
+        return raw
+
+    # Step 2: Compute pHash for each frame and filter by change
+    hashes: list[tuple[float, Path, int]] = []
+    for ts, path in raw:
+        h = _compute_phash(path)
+        hashes.append((ts, path, h))
+
+    # Always keep first frame
+    kept: list[tuple[float, Path]] = [(hashes[0][0], hashes[0][1])]
+    last_kept_hash = hashes[0][2]
+
+    for ts, path, h in hashes[1:]:
+        dist = _hamming_distance(h, last_kept_hash)
+        if dist >= change_threshold:
+            kept.append((ts, path))
+            last_kept_hash = h
+        else:
+            # Delete rejected frame to save disk space
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    logger.info(
+        "Dense extraction: %d raw frames → %d after pHash dedup (threshold=%d)",
+        len(raw), len(kept), change_threshold,
+    )
+    return kept
+
+
+def _compute_phash(image_path: Path) -> int:
+    """Compute a 64-bit perceptual hash of an image.
+
+    Resizes to 8x8 grayscale, compares each pixel to the mean.
+    Fast (~0.1ms per image) and robust to scaling/compression.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        # Fallback: use file size as a crude hash (always returns unique)
+        return image_path.stat().st_size
+
+    img = Image.open(image_path).convert("L").resize((8, 8), Image.LANCZOS)
+    pixels = list(img.getdata())
+    avg = sum(pixels) / len(pixels)
+    return sum(1 << i for i, p in enumerate(pixels) if p > avg)
+
+
+def _hamming_distance(hash1: int, hash2: int) -> int:
+    """Count differing bits between two 64-bit hashes."""
+    return bin(hash1 ^ hash2).count("1")
+
+
 class FFmpegError(Exception):
     """Raised when an ffmpeg subprocess fails."""
 

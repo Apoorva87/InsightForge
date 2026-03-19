@@ -72,7 +72,7 @@ def test_write_html_viewer_includes_sections_transcript_and_assets(
     assert "getEffectiveFrames" in html
     assert "content_score" in html
     assert "Analyzing transcript + searching web" in html
-    assert 'seekTo(item.frame.timestamp, true)' in html
+    assert 'openLightbox(annotatedFrameList, frameIdx)' in html
     assert "startTranscriptTracking" in html
     assert "requestAnimationFrame" in html
     assert 'if (transcriptMode === "section"' in html
