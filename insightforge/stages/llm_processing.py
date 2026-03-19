@@ -1089,17 +1089,28 @@ def _section_frames(
     if not frame_set:
         return []
 
+    # If frames already have VLM classifications (from pipeline batch enrichment),
+    # use those scores directly — no per-section VLM cost, so use a larger pool.
+    all_classified = frame_set and all(
+        f.frame_type is not None for f in frame_set.get_frames_in_range(start, end)[:1]
+    )
+    if all_classified:
+        # Bypass max_candidates limit since there's no VLM reranking cost.
+        # Use a generous pool (3x keep) to find the best frames in the time range.
+        generous_pool = max(max_candidates, keep * 3, 8)
+        candidates = _frame_candidates(frame_set, start, end, max_candidates=generous_pool)
+        if not candidates:
+            return []
+        # Filter out low-value frames (talking heads, transitions)
+        good = [f for f in candidates if (f.content_score or 0.0) >= 0.3]
+        if not good:
+            good = candidates
+        ranked = sorted(good, key=lambda f: f.content_score or 0.0, reverse=True)
+        return sorted(ranked[:keep], key=lambda f: f.timestamp)
+
     candidates = _frame_candidates(frame_set, start, end, max_candidates=max_candidates)
     if not candidates:
         return []
-
-    # If frames already have VLM classifications (from pipeline batch classification),
-    # use those scores directly instead of making per-section VLM reranking calls.
-    all_classified = all(f.frame_type is not None for f in candidates)
-    if all_classified:
-        # Sort by content_score (VLM-assigned), pick top-k
-        ranked = sorted(candidates, key=lambda f: f.content_score or 0.0, reverse=True)
-        return sorted(ranked[:keep], key=lambda f: f.timestamp)
 
     if vision_reranker:
         candidate_pairs = [(f"frame_{idx}", frame.path) for idx, frame in enumerate(candidates)]

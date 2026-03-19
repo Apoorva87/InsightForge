@@ -179,7 +179,7 @@ def _build_html(data: dict) -> str:
       min-height: 0;
     }}
     .sidebar header, .main header, .rightpane header {{
-      padding: 18px 20px;
+      padding: 10px 16px;
       border-bottom: 1px solid var(--border);
       background: linear-gradient(180deg, rgba(255,255,255,0.65), rgba(240,232,215,0.75));
     }}
@@ -188,13 +188,13 @@ def _build_html(data: dict) -> str:
       color: var(--muted);
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      font-size: 0.72rem;
-      margin-bottom: 0.55rem;
+      font-size: 0.68rem;
+      margin-bottom: 0.2rem;
     }}
     .title {{
-      font-size: 1.35rem;
+      font-size: 1.15rem;
       line-height: 1.2;
-      margin-bottom: 0.45rem;
+      margin-bottom: 0.25rem;
     }}
     .meta {{
       color: var(--muted);
@@ -282,14 +282,14 @@ def _build_html(data: dict) -> str:
       border: 1px solid var(--border);
       resize: vertical;
       overflow: auto;
-      min-height: 240px;
-      max-height: 68vh;
+      min-height: 320px;
+      max-height: 72vh;
     }}
     video {{
       width: 100%;
       height: 100%;
-      min-height: 200px;
-      max-height: 60vh;
+      min-height: 280px;
+      max-height: 65vh;
       border-radius: 16px;
       background: #111;
       border: 1px solid rgba(0,0,0,0.08);
@@ -360,9 +360,17 @@ def _build_html(data: dict) -> str:
     }}
     .section-head {{
       display: flex;
-      gap: 10px;
-      align-items: center;
+      gap: 8px;
+      align-items: baseline;
       flex-wrap: wrap;
+    }}
+    .section-meta-text {{
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--muted);
+    }}
+    .section-meta-text .accent {{
+      color: var(--accent);
     }}
     .section-title {{
       font-size: 1.35rem;
@@ -884,8 +892,7 @@ def _build_html(data: dict) -> str:
         </section>
         <section class="section-card">
           <div class="section-head">
-            <span class="chip" id="current-time-chip"></span>
-            <span class="chip" id="current-kind-chip"></span>
+            <span class="section-meta-text" id="current-time-chip"></span>
           </div>
           <p class="section-summary" id="current-summary"></p>
           <ul class="points" id="current-points"></ul>
@@ -1115,8 +1122,7 @@ def _build_html(data: dict) -> str:
       }});
       document.getElementById("current-heading").textContent = currentSection.heading;
       document.getElementById("current-meta").textContent = `${{currentSection.timestamp}} - ${{currentSection.timestamp_end}}`;
-      document.getElementById("current-time-chip").textContent = `${{currentSection.timestamp}} - ${{currentSection.timestamp_end}}`;
-      document.getElementById("current-kind-chip").textContent = currentSection.is_leaf ? "Leaf section" : "Parent topic";
+      document.getElementById("current-time-chip").innerHTML = `<span class="accent">${{currentSection.timestamp}} - ${{currentSection.timestamp_end}}</span>`;
       const summaryEl = document.getElementById("current-summary");
       summaryEl.innerHTML = renderMarkdown(currentSection.summary || "No summary available.");
 
@@ -1404,9 +1410,10 @@ def _build_html(data: dict) -> str:
 
     function getEffectiveFrames(section) {{
       const ownFrames = dedupeFrames(section.frames || []);
-      if (ownFrames.length >= 2 || !(section.subsections || []).length) {{
+      if (!(section.subsections || []).length) {{
         return ownFrames;
       }}
+      // Always merge subsection frames for a richer view, deduped by path+timestamp
       return dedupeFrames([
         ...ownFrames,
         ...flattenSubsectionFrames(section.subsections || []),

@@ -37,11 +37,11 @@ frames:
   top_k: 30
   output_quality: 2                 # ffmpeg -q:v, 1=best, 31=worst
   max_width: 1280
-  frames_per_section: 2
+  frames_per_section: 4
   vlm_rerank_enabled: true
   vlm_base_url: http://localhost:1234/v1
   vlm_model: qwen/qwen3-vl-8b
-  vlm_max_candidates: 4
+  vlm_max_candidates: 6
   vlm_enrich_batch_size: 6          # frames per VLM enrichment batch
   vlm_parallel_batches: 4           # max concurrent VLM batch requests
   vlm_transcript_context_chars: 200 # chars of transcript context per frame for VLM
