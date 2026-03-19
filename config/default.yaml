@@ -42,8 +42,8 @@ frames:
   vlm_base_url: http://localhost:1234/v1
   vlm_model: qwen/qwen3-vl-8b
   vlm_max_candidates: 6
-  vlm_enrich_batch_size: 6          # frames per VLM enrichment batch
-  vlm_parallel_batches: 4           # max concurrent VLM batch requests
+  vlm_enrich_batch_size: 6          # frames per VLM enrichment batch (sweet spot: 4-6)
+  vlm_parallel_batches: 1           # LMStudio serializes internally; >1 adds no speedup
   vlm_transcript_context_chars: 200 # chars of transcript context per frame for VLM
 
 llm_processing:
