@@ -65,7 +65,7 @@ Coherence guidance:
 
 Chunk summaries:
 {outline}
-
+{raw_transcript_context}
 Produce a JSON object with these exact keys:
 - "heading": concise section heading (max 8 words)
 - "summary": 1-3 sentence summary paragraph
@@ -93,7 +93,7 @@ Coherence guidance:
 
 Sub-section summaries:
 {outline}
-
+{raw_transcript_context}
 Produce a JSON object with these exact keys:
 - "heading": concise topic heading (max 8 words)
 - "summary": 1-3 sentence summary paragraph
@@ -479,6 +479,9 @@ def _generate_topic_section(
 ) -> NoteSection:
     summaries = topic.summaries
 
+    # Build truncated raw transcript for topic-level synthesis (Improvement #8)
+    raw_transcript = _build_raw_transcript_for_topic(topic, max_chars=2000)
+
     if len(summaries) <= max_chunk_summaries_per_subsection:
         data = _synthesize_section_data(
             prompt_template=_TOPIC_SECTION_TEMPLATE,
@@ -489,6 +492,7 @@ def _generate_topic_section(
             explanation_style=explanation_style,
             coherence_guidance=coherence_guidance,
             fallback=_fallback_topic_data(summaries),
+            raw_transcript=raw_transcript,
         )
         return NoteSection(
             section_id=f"section_{topic_index:04d}",
@@ -519,6 +523,7 @@ def _generate_topic_section(
     subgroup_spans = _partition_topic(topic, max_chunk_summaries_per_subsection)
     subsections: list[NoteSection] = []
     for sub_index, subgroup in enumerate(subgroup_spans):
+        subgroup_raw = _build_raw_transcript_for_topic(subgroup, max_chars=1500)
         subgroup_data = _synthesize_section_data(
             prompt_template=_TOPIC_SECTION_TEMPLATE,
             timestamp=f"{_format_time(subgroup.start)}-{_format_time(subgroup.end)}",
@@ -528,6 +533,7 @@ def _generate_topic_section(
             explanation_style=explanation_style,
             coherence_guidance=coherence_guidance,
             fallback=_fallback_topic_data(subgroup.summaries),
+            raw_transcript=subgroup_raw,
         )
         subsections.append(
             NoteSection(
@@ -613,8 +619,16 @@ def _synthesize_section_data(
     explanation_style: str,
     coherence_guidance: str,
     fallback: dict,
+    raw_transcript: str = "",
 ) -> dict:
     is_educational = _is_educational(explanation_style)
+    # Build raw transcript context block if available
+    raw_context = ""
+    if raw_transcript:
+        raw_context = (
+            "\nRaw transcript excerpt (use this to recover details the summaries may have compressed away):\n"
+            f"{raw_transcript}\n"
+        )
     request = LLMRequest(
         prompt=prompt_template.format(
             timestamp=timestamp,
@@ -622,6 +636,7 @@ def _synthesize_section_data(
             style_guidance=_explanation_style_guidance(explanation_style),
             coherence_guidance=coherence_guidance,
             educational_fields=_EDUCATIONAL_SECTION_FIELDS if is_educational else "",
+            raw_transcript_context=raw_context,
         ),
         system=_SECTION_SYSTEM_PROMPT,
         max_tokens=max_tokens,
@@ -660,6 +675,7 @@ def _generate_leaf_section(
         style_guidance=_explanation_style_guidance(explanation_style),
         coherence_guidance=coherence_guidance,
         educational_fields=_EDUCATIONAL_SECTION_FIELDS if is_educational else "",
+        raw_transcript_context="",
     )
     request = LLMRequest(
         prompt=prompt,
@@ -872,6 +888,26 @@ def _build_coherence_guidance(
     return "\n".join(lines)
 
 
+def _build_raw_transcript_for_topic(topic: TopicSpan, max_chars: int = 2000) -> str:
+    """Build a truncated raw transcript string from the topic's source chunks.
+
+    Provides the topic synthesis LLM with the original transcript text so it can
+    recover details that were lost during chunk summary compression.
+    """
+    parts: list[str] = []
+    total_chars = 0
+    for sc, _ in topic.items:
+        text = sc.chunk.text.strip()
+        remaining = max_chars - total_chars
+        if remaining <= 0:
+            break
+        if len(text) > remaining:
+            text = text[:remaining - 3].rstrip() + "..."
+        parts.append(f"[{sc.chunk.timestamp_str}] {text}")
+        total_chars += len(text)
+    return "\n".join(parts) if parts else ""
+
+
 def _compact_neighbor_text(text: str, limit: int = 180) -> str:
     cleaned = " ".join(text.split())
     if len(cleaned) <= limit:
@@ -1022,7 +1058,7 @@ def _section_frames(
     if vision_reranker:
         candidate_pairs = [(f"frame_{idx}", frame.path) for idx, frame in enumerate(candidates)]
         try:
-            ranked_ids = vision_reranker.rank_frames(
+            ranked_results = vision_reranker.rank_frames(
                 section_heading=heading,
                 section_summary=summary,
                 key_points=key_points,
@@ -1030,9 +1066,22 @@ def _section_frames(
                 keep=keep,
                 educational=_is_educational(explanation_style),
             )
-            if ranked_ids:
-                id_to_frame = {candidate_id: frame for candidate_id, frame in zip((cid for cid, _ in candidate_pairs), candidates)}
-                ranked_frames = [id_to_frame[candidate_id] for candidate_id in ranked_ids if candidate_id in id_to_frame]
+            if ranked_results:
+                id_to_frame = {cid: frame for cid, frame in zip((c for c, _ in candidate_pairs), candidates)}
+                ranked_frames: list[Frame] = []
+                for entry in ranked_results:
+                    # Handle both dict (new format) and str (legacy format)
+                    if isinstance(entry, dict):
+                        cid = entry.get("id", "")
+                        desc = entry.get("description", "")
+                    else:
+                        cid = str(entry)
+                        desc = ""
+                    if cid in id_to_frame:
+                        frame = id_to_frame[cid]
+                        if desc:
+                            frame.description = desc
+                        ranked_frames.append(frame)
                 if ranked_frames:
                     return sorted(ranked_frames[:keep], key=lambda frame: frame.timestamp)
         except VisionRerankerError as exc:

@@ -73,13 +73,17 @@ def _serialize_section(
             if candidate.exists():
                 frame_path = candidate
         if frame_path.exists():
+            # Use VLM description if available, fall back to transcript caption
+            caption = frame.description if frame.description else _frame_caption(frame.timestamp, transcript)
             serialized_frames.append(
                 {
                     "path": _rel(frame_path, viewer_dir),
                     "timestamp": frame.timestamp,
                     "timestamp_str": _format_time(frame.timestamp),
-                    "caption": _frame_caption(frame.timestamp, transcript),
+                    "caption": caption,
                     "content_score": frame.content_score or 0.0,
+                    "frame_type": frame.frame_type or "other",
+                    "description": frame.description or "",
                 }
             )
 
@@ -88,6 +92,9 @@ def _serialize_section(
         "heading": section.heading,
         "summary": section.summary,
         "key_points": section.key_points,
+        "formulas": section.formulas,
+        "code_snippets": section.code_snippets,
+        "examples": section.examples,
         "start": section.timestamp_start,
         "end": section.timestamp_end,
         "timestamp": section.timestamp_str,
@@ -120,6 +127,10 @@ def _build_html(data: dict) -> str:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{_escape_html(data["title"])} - InsightForge Viewer</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
   <style>
     :root {{
       --bg: #f5f1e8;
@@ -606,6 +617,58 @@ def _build_html(data: dict) -> str:
       color: var(--muted);
       font-size: 0.9rem;
     }}
+    .edu-artifacts {{
+      display: grid;
+      gap: 12px;
+      margin-top: 8px;
+    }}
+    .edu-block {{
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+    }}
+    .edu-block.formulas {{
+      background: rgba(12,108,102,0.06);
+      border-color: rgba(12,108,102,0.2);
+    }}
+    .edu-block.code {{
+      background: #1e1e2e;
+      color: #cdd6f4;
+      font-family: var(--mono);
+      font-size: 0.88rem;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }}
+    .edu-block.examples {{
+      background: rgba(217,123,41,0.06);
+      border-color: rgba(217,123,41,0.2);
+    }}
+    .edu-label {{
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 8px;
+      color: var(--muted);
+    }}
+    .edu-block pre {{
+      margin: 0;
+      white-space: pre-wrap;
+      font-family: var(--mono);
+      font-size: 0.88rem;
+    }}
+    .edu-block .formula-item {{
+      margin: 6px 0;
+      font-size: 1.05rem;
+    }}
+    .edu-block .example-item {{
+      padding: 8px 12px;
+      border-left: 3px solid rgba(217,123,41,0.4);
+      margin: 6px 0;
+      line-height: 1.55;
+    }}
+    .rendered-md p {{ margin: 0 0 0.5em; line-height: 1.6; }}
+    .rendered-md p:last-child {{ margin-bottom: 0; }}
     .empty {{
       color: var(--muted);
       line-height: 1.5;
@@ -833,7 +896,8 @@ def _build_html(data: dict) -> str:
       document.getElementById("current-meta").textContent = `${{currentSection.timestamp}} - ${{currentSection.timestamp_end}}`;
       document.getElementById("current-time-chip").textContent = `${{currentSection.timestamp}} - ${{currentSection.timestamp_end}}`;
       document.getElementById("current-kind-chip").textContent = currentSection.is_leaf ? "Leaf section" : "Parent topic";
-      document.getElementById("current-summary").textContent = currentSection.summary || "No summary available.";
+      const summaryEl = document.getElementById("current-summary");
+      summaryEl.innerHTML = renderMarkdown(currentSection.summary || "No summary available.");
 
       const points = document.getElementById("current-points");
       points.innerHTML = "";
@@ -905,8 +969,107 @@ def _build_html(data: dict) -> str:
         gallery.appendChild(card);
       }});
 
+      renderEducationalArtifacts(currentSection);
+
       renderTranscript();
       if (shouldSeek) seekTo(currentSection.start, false);
+    }}
+
+    function renderEducationalArtifacts(section) {{
+      let container = document.getElementById("current-edu-artifacts");
+      if (!container) {{
+        container = document.createElement("div");
+        container.id = "current-edu-artifacts";
+        container.className = "edu-artifacts";
+        const sectionCard = document.querySelector(".section-card");
+        if (sectionCard) sectionCard.appendChild(container);
+      }}
+      container.innerHTML = "";
+
+      const formulas = section.formulas || [];
+      const code = section.code_snippets || [];
+      const examples = section.examples || [];
+
+      if (!formulas.length && !code.length && !examples.length) {{
+        container.hidden = true;
+        return;
+      }}
+      container.hidden = false;
+
+      if (formulas.length) {{
+        const block = document.createElement("div");
+        block.className = "edu-block formulas";
+        const label = document.createElement("div");
+        label.className = "edu-label";
+        label.textContent = "Formulas";
+        block.appendChild(label);
+        formulas.forEach(f => {{
+          const item = document.createElement("div");
+          item.className = "formula-item";
+          item.textContent = f;
+          block.appendChild(item);
+        }});
+        container.appendChild(block);
+        renderKaTeX(block);
+      }}
+
+      if (code.length) {{
+        const block = document.createElement("div");
+        block.className = "edu-block code";
+        const label = document.createElement("div");
+        label.className = "edu-label";
+        label.style.color = "#a6adc8";
+        label.textContent = "Code";
+        block.appendChild(label);
+        code.forEach(snippet => {{
+          const pre = document.createElement("pre");
+          pre.textContent = snippet;
+          block.appendChild(pre);
+        }});
+        container.appendChild(block);
+      }}
+
+      if (examples.length) {{
+        const block = document.createElement("div");
+        block.className = "edu-block examples";
+        const label = document.createElement("div");
+        label.className = "edu-label";
+        label.textContent = "Examples";
+        block.appendChild(label);
+        examples.forEach(ex => {{
+          const item = document.createElement("div");
+          item.className = "example-item";
+          item.textContent = ex;
+          block.appendChild(item);
+        }});
+        container.appendChild(block);
+      }}
+    }}
+
+    function renderMarkdown(text) {{
+      if (typeof marked !== "undefined" && marked.parse) {{
+        try {{
+          const html = marked.parse(text || "");
+          return `<div class="rendered-md">${{html}}</div>`;
+        }} catch (e) {{}}
+      }}
+      return escapeHtml(text || "");
+    }}
+
+    function renderKaTeX(element) {{
+      if (typeof renderMathInElement === "function") {{
+        try {{
+          renderMathInElement(element, {{
+            delimiters: [
+              {{left: "$$", right: "$$", display: true}},
+              {{left: "$", right: "$", display: false}},
+              {{left: "\\\\(", right: "\\\\)", display: false}},
+              {{left: "\\\\[", right: "\\\\]", display: true}},
+            ],
+            throwOnError: false,
+          }});
+        }} catch (e) {{}}
+      }}
     }}
 
     function findActiveSectionByTime(seconds, sections = DATA.sections) {{
@@ -963,7 +1126,8 @@ def _build_html(data: dict) -> str:
       const sectionMid = (section.start + section.end) / 2;
       const sectionSpan = Math.max(section.end - section.start, 1);
       const pointTokens = points.map(p => tokenize(p));
-      const frameTokens = frames.map(f => tokenize(f.caption || ""));
+      // Prefer VLM description over transcript caption for matching
+      const frameTokens = frames.map(f => tokenize(f.description || f.caption || ""));
 
       const candidates = [];
       for (let pi = 0; pi < points.length; pi++) {{
@@ -1470,6 +1634,10 @@ def _build_notes_html(data: dict) -> str:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{_escape_html(data["title"])} - Notes</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"
+    onload="renderMathInElement(document.body, {{delimiters: [{{left:'$$',right:'$$',display:true}},{{left:'$',right:'$',display:false}}], throwOnError:false}});"></script>
   <style>
     :root {{
       --bg: #f6f1e7;
@@ -1526,6 +1694,45 @@ def _build_notes_html(data: dict) -> str:
       padding-top: 10px;
       border-top: 1px dashed var(--border);
     }}
+    .edu-formulas {{
+      background: rgba(12,108,102,0.06);
+      border: 1px solid rgba(12,108,102,0.2);
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin-top: 8px;
+    }}
+    .edu-code {{
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin-top: 8px;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.88rem;
+      white-space: pre-wrap;
+      overflow-x: auto;
+    }}
+    .edu-examples {{
+      background: rgba(217,123,41,0.06);
+      border: 1px solid rgba(217,123,41,0.2);
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin-top: 8px;
+    }}
+    .edu-label {{
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+      color: var(--muted);
+    }}
+    .edu-example-item {{
+      padding: 6px 10px;
+      border-left: 3px solid rgba(217,123,41,0.4);
+      margin: 4px 0;
+      line-height: 1.55;
+    }}
   </style>
 </head>
 <body>
@@ -1546,12 +1753,14 @@ def _render_notes_section(section: dict, level: int) -> str:
     heading = min(max(level, 2), 4)
     points = "".join(f"<li>{_escape_html(point)}</li>" for point in section.get("key_points", []))
     subsections = "".join(_render_notes_subsection(sub, level + 1) for sub in section.get("subsections", []))
+    edu = _render_edu_html(section)
     return (
         "<section class='notes-block'>"
         f"<h{heading}>{_escape_html(section['heading'])}</h{heading}>"
         f"<div class='time'>{_escape_html(section['timestamp'])} - {_escape_html(section['timestamp_end'])}</div>"
         f"<p>{_escape_html(section.get('summary') or '')}</p>"
         f"{'<ul>' + points + '</ul>' if points else ''}"
+        f"{edu}"
         f"{subsections}"
         "</section>"
     )
@@ -1560,14 +1769,50 @@ def _render_notes_section(section: dict, level: int) -> str:
 def _render_notes_subsection(section: dict, level: int) -> str:
     heading = min(max(level, 3), 5)
     points = "".join(f"<li>{_escape_html(point)}</li>" for point in section.get("key_points", []))
+    edu = _render_edu_html(section)
     return (
         "<div class='sub'>"
         f"<h{heading}>{_escape_html(section['heading'])}</h{heading}>"
         f"<div class='time'>{_escape_html(section['timestamp'])} - {_escape_html(section['timestamp_end'])}</div>"
         f"<p>{_escape_html(section.get('summary') or '')}</p>"
         f"{'<ul>' + points + '</ul>' if points else ''}"
+        f"{edu}"
         "</div>"
     )
+
+
+def _render_edu_html(section: dict) -> str:
+    """Render educational artifacts (formulas, code, examples) as HTML blocks."""
+    parts: list[str] = []
+
+    formulas = section.get("formulas", [])
+    if formulas:
+        items = "".join(f"<div>{_escape_html(f)}</div>" for f in formulas)
+        parts.append(
+            f"<div class='edu-formulas'>"
+            f"<div class='edu-label'>Formulas</div>"
+            f"{items}</div>"
+        )
+
+    code = section.get("code_snippets", [])
+    if code:
+        snippets = "".join(f"<pre>{_escape_html(s)}</pre>" for s in code)
+        parts.append(
+            f"<div class='edu-code'>"
+            f"<div class='edu-label' style='color:#a6adc8'>Code</div>"
+            f"{snippets}</div>"
+        )
+
+    examples = section.get("examples", [])
+    if examples:
+        items = "".join(f"<div class='edu-example-item'>{_escape_html(e)}</div>" for e in examples)
+        parts.append(
+            f"<div class='edu-examples'>"
+            f"<div class='edu-label'>Examples</div>"
+            f"{items}</div>"
+        )
+
+    return "".join(parts)
 
 
 def _escape_html(text: str) -> str:

@@ -73,6 +73,25 @@ def run(
     return scored
 
 
+def passthrough(chunk_batch: ChunkBatch) -> list[ScoredChunk]:
+    """Create ScoredChunks with default scores, skipping LLM calls.
+
+    Used when detail=high to avoid unnecessary LLM calls since all chunks
+    are retained regardless of score.
+    """
+    scored = []
+    for chunk in chunk_batch.chunks:
+        sc = ScoredChunk(
+            chunk=chunk,
+            llm_score=0.5,
+            visual_score=0.0,
+        )
+        sc.compute_composite(llm_weight=1.0, visual_weight=0.0)
+        scored.append(sc)
+    logger.info("Importance passthrough: %d chunks (LLM scoring skipped)", len(scored))
+    return scored
+
+
 def apply_visual_scores(
     scored_chunks: list[ScoredChunk],
     frame_set: Optional[FrameSet],

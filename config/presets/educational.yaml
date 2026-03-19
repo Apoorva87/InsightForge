@@ -1,6 +1,6 @@
 transcript:
   prefer_manual: true
-  whisper_model: base
+  whisper_model: medium  # upgraded for better technical vocab in educational mode
 
 chunking:
   strategy: hybrid

@@ -17,6 +17,8 @@ class Frame(BaseModel):
     scene_diff_score: Optional[float] = None   # 0.0–1.0 from scene detection
     content_score: Optional[float] = None      # 0.0–1.0, higher = more visual content (text/diagrams)
     nearest_chunk_id: Optional[str] = None     # linked chunk after alignment
+    description: Optional[str] = None          # VLM-generated description of visual content
+    frame_type: Optional[str] = None           # VLM-classified: slide/diagram/code/talking_head/transition/other
 
     @property
     def timestamp_str(self) -> str:

@@ -57,6 +57,7 @@ def run(job: VideoJob) -> FinalOutput:
     config = load_config(job.config_path)
     config = _apply_job_overrides(config, job)
     config = _apply_educational_frame_overrides(config)
+    config = _apply_educational_whisper_override(config)
     _configure_logging(config)
     logger.info("InsightForge pipeline starting — %s", job.url)
 
@@ -111,6 +112,8 @@ def run(job: VideoJob) -> FinalOutput:
     output_cfg = config.get("output", {})
 
     frames_enabled = job.frames_enabled and frames_cfg.get("enabled", True)
+    # Skip LLM importance scoring when detail=high — all chunks are kept anyway
+    skip_importance_llm = job.detail == "high"
 
     frame_set: Optional[FrameSet] = None
     scored_chunks: list[ScoredChunk] = []
@@ -134,16 +137,20 @@ def run(job: VideoJob) -> FinalOutput:
                 quality=frames_cfg.get("output_quality", 2),
             )
 
-        futures["importance"] = executor.submit(
-            importance.run,
-            chunk_batch=chunk_batch,
-            llm=llm_router,
-            frame_set=None,  # visual scores computed after frames complete
-            threshold=importance_cfg.get("threshold", 0.4),
-            llm_weight=importance_cfg.get("llm_weight", 0.7),
-            visual_weight=importance_cfg.get("visual_weight", 0.3),
-            batch_size=importance_cfg.get("batch_size", 5),
-        )
+        if skip_importance_llm:
+            logger.info("detail=high: skipping LLM importance scoring (all chunks retained)")
+            scored_chunks = importance.passthrough(chunk_batch)
+        else:
+            futures["importance"] = executor.submit(
+                importance.run,
+                chunk_batch=chunk_batch,
+                llm=llm_router,
+                frame_set=None,  # visual scores computed after frames complete
+                threshold=importance_cfg.get("threshold", 0.4),
+                llm_weight=importance_cfg.get("llm_weight", 0.7),
+                visual_weight=importance_cfg.get("visual_weight", 0.3),
+                batch_size=importance_cfg.get("batch_size", 5),
+            )
 
         for name, future in futures.items():
             try:
@@ -166,6 +173,10 @@ def run(job: VideoJob) -> FinalOutput:
             llm_weight=importance_cfg.get("llm_weight", 0.7),
             visual_weight=importance_cfg.get("visual_weight", 0.3),
         )
+
+    # VLM frame classification — replace JPEG-size heuristic with VLM-based scoring
+    if frame_set and frames_cfg.get("vlm_rerank_enabled", True):
+        frame_set = _classify_frames_with_vlm(frame_set, frames_cfg)
 
     # Filter chunks by detail level
     filtered = importance.filter_by_detail(
@@ -490,6 +501,33 @@ def _apply_educational_frame_overrides(config: dict) -> dict:
     return config
 
 
+def _apply_educational_whisper_override(config: dict) -> dict:
+    """Upgrade Whisper model when educational mode is active for better technical vocab."""
+    llm_proc_cfg = config.get("llm_processing", {})
+    style = (llm_proc_cfg.get("explanation_style", "") or "").strip().lower().replace("-", "_")
+    if style != "educational":
+        return config
+
+    config = {**config}
+    transcript_cfg = {**config.get("transcript", {})}
+    config["transcript"] = transcript_cfg
+
+    current_model = transcript_cfg.get("whisper_model", "base")
+    # Upgrade hierarchy: tiny < base < small < medium < large
+    upgrade_order = ["tiny", "base", "small", "medium", "large"]
+    current_rank = upgrade_order.index(current_model) if current_model in upgrade_order else -1
+    target_rank = upgrade_order.index("medium")
+
+    if current_rank < target_rank:
+        transcript_cfg["whisper_model"] = "medium"
+        logger.debug(
+            "Educational mode: upgraded Whisper model from '%s' to 'medium' for better technical vocab",
+            current_model,
+        )
+
+    return config
+
+
 def _apply_job_overrides(config: dict, job: VideoJob) -> dict:
     """Apply CLI job overrides after config loading."""
     config = {**config}
@@ -518,6 +556,42 @@ def _apply_job_overrides(config: dict, job: VideoJob) -> dict:
                 llm_cfg["lmstudio"] = lmstudio_cfg
 
     return config
+
+
+def _classify_frames_with_vlm(frame_set: FrameSet, frames_cfg: dict) -> FrameSet:
+    """Use VLM to classify frames by type and replace JPEG-size content_score heuristic."""
+    from insightforge.utils.vision import VisionReranker
+
+    try:
+        reranker = VisionReranker(
+            base_url=frames_cfg.get("vlm_base_url", "http://localhost:1234/v1"),
+            model=frames_cfg.get("vlm_model", "qwen/qwen3-vl-8b"),
+        )
+    except Exception as exc:
+        logger.warning("VLM frame classification unavailable: %s", exc)
+        return frame_set
+
+    frame_pairs = [(f.frame_id, f.path) for f in frame_set.frames if f.path.exists()]
+    if not frame_pairs:
+        return frame_set
+
+    try:
+        classifications = reranker.classify_frames(frame_pairs, batch_size=8)
+    except Exception as exc:
+        logger.warning("VLM frame classification failed: %s; keeping JPEG heuristic scores", exc)
+        return frame_set
+
+    updated_count = 0
+    for frame in frame_set.frames:
+        info = classifications.get(frame.frame_id)
+        if info:
+            frame.content_score = info["content_score"]
+            frame.frame_type = info["frame_type"]
+            frame.description = info.get("description", "")
+            updated_count += 1
+
+    logger.info("VLM classified %d/%d frames", updated_count, len(frame_set.frames))
+    return frame_set
 
 
 def _viewer_config(config: dict, llm_router: Optional["LLMRouter"] = None) -> dict:
