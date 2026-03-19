@@ -21,6 +21,9 @@ class NoteSection(BaseModel):
     heading: str                             # LLM-generated heading
     summary: str                             # LLM-generated summary paragraph
     key_points: list[str] = []               # bullet points
+    formulas: list[str] = []                 # LaTeX/plain-text formulas (educational mode)
+    code_snippets: list[str] = []            # illustrative code examples (educational mode)
+    examples: list[str] = []                 # worked examples or analogies (educational mode)
     frames: list[Frame] = []                 # associated frames for inline embedding
     subsections: list["NoteSection"] = []    # optional nested sub-sections
 

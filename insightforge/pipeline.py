@@ -56,6 +56,7 @@ def run(job: VideoJob) -> FinalOutput:
     """
     config = load_config(job.config_path)
     config = _apply_job_overrides(config, job)
+    config = _apply_educational_frame_overrides(config)
     _configure_logging(config)
     logger.info("InsightForge pipeline starting — %s", job.url)
 
@@ -459,6 +460,34 @@ def _format_seconds(seconds: int) -> str:
     if minutes > 0:
         return f"{minutes}m {secs:02d}s"
     return f"{secs}s"
+
+
+def _apply_educational_frame_overrides(config: dict) -> dict:
+    """Boost frame extraction/retention parameters when educational mode is active."""
+    llm_proc_cfg = config.get("llm_processing", {})
+    style = (llm_proc_cfg.get("explanation_style", "") or "").strip().lower().replace("-", "_")
+    if style != "educational":
+        return config
+
+    config = {**config}
+    frames_cfg = {**config.get("frames", {})}
+    config["frames"] = frames_cfg
+
+    # Use max/min so user overrides that are already more aggressive are preserved
+    frames_cfg["top_k"] = max(frames_cfg.get("top_k", 30), 50)
+    frames_cfg["frames_per_section"] = max(frames_cfg.get("frames_per_section", 2), 4)
+    frames_cfg["vlm_max_candidates"] = max(frames_cfg.get("vlm_max_candidates", 4), 6)
+    frames_cfg["scene_diff_threshold"] = min(frames_cfg.get("scene_diff_threshold", 0.2), 0.15)
+
+    logger.debug(
+        "Educational mode: boosted frame params — top_k=%d, frames_per_section=%d, "
+        "vlm_max_candidates=%d, scene_diff_threshold=%.2f",
+        frames_cfg["top_k"],
+        frames_cfg["frames_per_section"],
+        frames_cfg["vlm_max_candidates"],
+        frames_cfg["scene_diff_threshold"],
+    )
+    return config
 
 
 def _apply_job_overrides(config: dict, job: VideoJob) -> dict:

@@ -11,11 +11,11 @@ chunking:
 frames:
   enabled: true
   extraction_mode: scene_change
-  scene_diff_threshold: 0.18
-  top_k: 40
-  frames_per_section: 2
+  scene_diff_threshold: 0.15
+  top_k: 50
+  frames_per_section: 4
   vlm_rerank_enabled: true
-  vlm_max_candidates: 4
+  vlm_max_candidates: 6
 
 llm_processing:
   hierarchical: true

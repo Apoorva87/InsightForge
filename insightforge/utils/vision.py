@@ -44,12 +44,13 @@ class VisionReranker:
         key_points: list[str],
         candidates: list[tuple[str, Path]],
         keep: int = 2,
+        educational: bool = False,
     ) -> list[str]:
         """Return candidate ids ordered best-first for explanatory value."""
         if not candidates:
             return []
 
-        prompt = self._build_prompt(section_heading, section_summary, key_points, [cid for cid, _ in candidates], keep)
+        prompt = self._build_prompt(section_heading, section_summary, key_points, [cid for cid, _ in candidates], keep, educational=educational)
         content = [{"type": "text", "text": prompt}]
         for candidate_id, path in candidates:
             content.append({"type": "text", "text": f"Candidate {candidate_id}"})
@@ -91,13 +92,26 @@ class VisionReranker:
         key_points: list[str],
         candidate_ids: list[str],
         keep: int,
+        educational: bool = False,
     ) -> str:
         points = "\n".join(f"- {point}" for point in key_points[:4]) or "- none"
         ids = ", ".join(candidate_ids)
+        if educational:
+            instruction = (
+                "You are ranking screenshot candidates for educational study notes.\n"
+                "STRONGLY prefer frames showing diagrams, flowcharts, equations, code, slides, "
+                "tables, charts, whiteboards, or any visual teaching aid — even if partially visible.\n"
+                "Only penalize frames that are PURELY a talking head with NO educational content visible.\n"
+                "Penalize blurry transitions and near-duplicates.\n"
+            )
+        else:
+            instruction = (
+                "You are ranking screenshot candidates for study notes.\n"
+                "Choose the frames that best explain the section, preferring readable diagrams, equations, code, labels, or slides.\n"
+                "Penalize talking heads, blurry transitions, and near-duplicates.\n"
+            )
         return (
-            "You are ranking screenshot candidates for study notes.\n"
-            "Choose the frames that best explain the section, preferring readable diagrams, equations, code, labels, or slides.\n"
-            "Penalize talking heads, blurry transitions, and near-duplicates.\n\n"
+            f"{instruction}\n"
             f"Section heading: {section_heading}\n"
             f"Section summary: {section_summary}\n"
             f"Key points:\n{points}\n\n"

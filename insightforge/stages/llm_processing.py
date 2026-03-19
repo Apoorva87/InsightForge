@@ -42,8 +42,14 @@ Produce a compact JSON object with these exact keys:
 - "key_points": list of 2-4 bullet point strings
 - "keywords": list of 3-8 short keywords or phrases
 - "transition": one of "continue", "shift", "conclusion"
-
+{educational_fields}
 JSON only:"""
+
+_EDUCATIONAL_CHUNK_FIELDS = """\
+- "formulas": list of math formulas/equations mentioned or described in this chunk (LaTeX notation, e.g. "$E = mc^2$"). Empty list if none discussed.
+- "code_snippets": list of code or pseudocode the speaker walked through in this chunk. Empty list if none discussed.
+- "examples": list of worked examples, analogies, or concrete illustrations the speaker gave. Empty list if none given.
+"""
 
 _TOPIC_SECTION_TEMPLATE = """\
 You are given compressed chunk summaries from one contiguous topic in a video.
@@ -64,8 +70,14 @@ Produce a JSON object with these exact keys:
 - "heading": concise section heading (max 8 words)
 - "summary": 1-3 sentence summary paragraph
 - "key_points": list of 2-5 bullet point strings
-
+{educational_fields}
 JSON only:"""
+
+_EDUCATIONAL_SECTION_FIELDS = """\
+- "formulas": list of math formulas/equations from the chunk summaries that are central to this topic (LaTeX). Preserve formulas from chunks; do not invent new ones. Empty list if none.
+- "code_snippets": list of code/pseudocode from the chunk summaries that illustrate this topic. Preserve code from chunks; do not invent new ones. Empty list if none.
+- "examples": list of worked examples or analogies from the chunk summaries. Preserve examples from chunks; do not invent new ones. Empty list if none.
+"""
 
 _PARENT_TOPIC_TEMPLATE = """\
 You are given summaries of sub-sections that belong to one larger topic in a video.
@@ -86,7 +98,7 @@ Produce a JSON object with these exact keys:
 - "heading": concise topic heading (max 8 words)
 - "summary": 1-3 sentence summary paragraph
 - "key_points": list of 2-5 bullet point strings
-
+{educational_fields}
 JSON only:"""
 
 _EXEC_SUMMARY_TEMPLATE = """\
@@ -213,16 +225,27 @@ class ChunkSummary(BaseModel):
     key_points: list[str]
     keywords: list[str] = []
     transition: str = "continue"
+    formulas: list[str] = []
+    code_snippets: list[str] = []
+    examples: list[str] = []
 
     @property
     def compact_text(self) -> str:
         key_points = "; ".join(self.key_points[:4])
         keywords = ", ".join(self.keywords[:8])
-        return (
+        parts = (
             f"[{_format_time(self.start)}-{_format_time(self.end)}] {self.heading}: "
             f"{self.main_idea} | Points: {key_points} | Keywords: {keywords} | "
             f"Transition: {self.transition}"
         )
+        # Include educational artifacts in compact text so topic synthesis can see them
+        if self.formulas:
+            parts += f" | Formulas: {'; '.join(self.formulas[:3])}"
+        if self.code_snippets:
+            parts += f" | Code: {'; '.join(s[:80] for s in self.code_snippets[:2])}"
+        if self.examples:
+            parts += f" | Examples: {'; '.join(e[:80] for e in self.examples[:2])}"
+        return parts
 
 
 class TopicSpan(BaseModel):
@@ -396,17 +419,19 @@ def _generate_chunk_summary(
     max_tokens: int,
     explanation_style: str,
 ) -> ChunkSummary:
+    is_educational = _is_educational(explanation_style)
     prompt = _CHUNK_SUMMARY_TEMPLATE.format(
         timestamp=sc.chunk.timestamp_str,
         text=sc.chunk.text[:3000],
         style_guidance=_explanation_style_guidance(explanation_style),
+        educational_fields=_EDUCATIONAL_CHUNK_FIELDS if is_educational else "",
     )
     request = LLMRequest(
         prompt=prompt,
         system=_SECTION_SYSTEM_PROMPT,
         max_tokens=max_tokens,
         temperature=0.1,
-        response_format=_CHUNK_SUMMARY_RESPONSE_SCHEMA,
+        response_format=_educational_chunk_summary_schema() if is_educational else _CHUNK_SUMMARY_RESPONSE_SCHEMA,
         extra_body=_LMSTUDIO_NO_THINKING,
     )
 
@@ -433,6 +458,9 @@ def _generate_chunk_summary(
         key_points=data.get("key_points", []),
         keywords=data.get("keywords", []),
         transition=data.get("transition", "continue"),
+        formulas=data.get("formulas", []),
+        code_snippets=data.get("code_snippets", []),
+        examples=data.get("examples", []),
     )
 
 
@@ -471,6 +499,9 @@ def _generate_topic_section(
             heading=data.get("heading", f"Topic {_format_time(topic.start)}"),
             summary=data.get("summary", ""),
             key_points=data.get("key_points", []),
+            formulas=data.get("formulas", []),
+            code_snippets=data.get("code_snippets", []),
+            examples=data.get("examples", []),
             frames=_section_frames(
                 frame_set,
                 topic.start,
@@ -481,6 +512,7 @@ def _generate_topic_section(
                 vision_reranker=vision_reranker,
                 keep=frame_rerank_keep,
                 max_candidates=frame_rerank_max_candidates,
+                explanation_style=explanation_style,
             ),
         )
 
@@ -507,6 +539,9 @@ def _generate_topic_section(
                 heading=subgroup_data.get("heading", f"Part {sub_index + 1}"),
                 summary=subgroup_data.get("summary", ""),
                 key_points=subgroup_data.get("key_points", []),
+                formulas=subgroup_data.get("formulas", []),
+                code_snippets=subgroup_data.get("code_snippets", []),
+                examples=subgroup_data.get("examples", []),
                 frames=_section_frames(
                     frame_set,
                     subgroup.start,
@@ -517,6 +552,7 @@ def _generate_topic_section(
                     vision_reranker=vision_reranker,
                     keep=frame_rerank_keep,
                     max_candidates=frame_rerank_max_candidates,
+                    explanation_style=explanation_style,
                 ),
             )
         )
@@ -549,6 +585,9 @@ def _generate_topic_section(
         heading=parent_data.get("heading", f"Topic {_format_time(topic.start)}"),
         summary=parent_data.get("summary", ""),
         key_points=parent_data.get("key_points", []),
+        formulas=parent_data.get("formulas", []),
+        code_snippets=parent_data.get("code_snippets", []),
+        examples=parent_data.get("examples", []),
         frames=_section_frames(
             frame_set,
             topic.start,
@@ -559,6 +598,7 @@ def _generate_topic_section(
             vision_reranker=vision_reranker,
             keep=min(4, frame_rerank_keep + 1),
             max_candidates=max(frame_rerank_max_candidates, 5),
+            explanation_style=explanation_style,
         ),
         subsections=subsections,
     )
@@ -574,17 +614,19 @@ def _synthesize_section_data(
     coherence_guidance: str,
     fallback: dict,
 ) -> dict:
+    is_educational = _is_educational(explanation_style)
     request = LLMRequest(
         prompt=prompt_template.format(
             timestamp=timestamp,
             outline=outline,
             style_guidance=_explanation_style_guidance(explanation_style),
             coherence_guidance=coherence_guidance,
+            educational_fields=_EDUCATIONAL_SECTION_FIELDS if is_educational else "",
         ),
         system=_SECTION_SYSTEM_PROMPT,
         max_tokens=max_tokens,
         temperature=0.2,
-        response_format=_SECTION_RESPONSE_SCHEMA,
+        response_format=_educational_section_schema() if is_educational else _SECTION_RESPONSE_SCHEMA,
         extra_body=_LMSTUDIO_NO_THINKING,
     )
     try:
@@ -611,18 +653,20 @@ def _generate_leaf_section(
     frame_rerank_keep: int,
     frame_rerank_max_candidates: int,
 ) -> NoteSection:
+    is_educational = _is_educational(explanation_style)
     prompt = _TOPIC_SECTION_TEMPLATE.format(
         timestamp=f"{sc.chunk.timestamp_str}-{_format_time(sc.chunk.end)}",
         outline=f"- [{sc.chunk.timestamp_str}] {sc.chunk.text[:2500]}",
         style_guidance=_explanation_style_guidance(explanation_style),
         coherence_guidance=coherence_guidance,
+        educational_fields=_EDUCATIONAL_SECTION_FIELDS if is_educational else "",
     )
     request = LLMRequest(
         prompt=prompt,
         system=_SECTION_SYSTEM_PROMPT,
         max_tokens=max_tokens,
         temperature=0.2,
-        response_format=_SECTION_RESPONSE_SCHEMA,
+        response_format=_educational_section_schema() if is_educational else _SECTION_RESPONSE_SCHEMA,
         extra_body=_LMSTUDIO_NO_THINKING,
     )
 
@@ -649,6 +693,9 @@ def _generate_leaf_section(
         heading=data.get("heading", f"Section {index + 1}"),
         summary=data.get("summary", ""),
         key_points=data.get("key_points", []),
+        formulas=data.get("formulas", []),
+        code_snippets=data.get("code_snippets", []),
+        examples=data.get("examples", []),
         frames=_section_frames(
             frame_set,
             sc.chunk.start,
@@ -659,6 +706,7 @@ def _generate_leaf_section(
             vision_reranker=vision_reranker,
             keep=frame_rerank_keep,
             max_candidates=frame_rerank_max_candidates,
+            explanation_style=explanation_style,
         ),
     )
 
@@ -844,7 +892,17 @@ def _explanation_style_guidance(style: str) -> str:
         ),
         "educational": (
             "Write like a strong teacher. Make the explanation intuitive, connect steps logically, "
-            "surface why each idea matters, and include enough context for a learner to follow."
+            "surface why each idea matters, and include enough context for a learner to follow.\n"
+            "IMPORTANT — Extract educational artifacts directly from the transcript content:\n"
+            "- \"formulas\": If the speaker describes, derives, or references any mathematical "
+            "formulas, equations, or quantitative relationships, reconstruct them in LaTeX notation "
+            "(e.g. `$loss = -\\sum y_i \\log(\\hat{y}_i)$`). Only include formulas actually discussed.\n"
+            "- \"code_snippets\": If the speaker walks through code, writes pseudocode, or describes "
+            "an algorithm step-by-step, reconstruct the code or pseudocode they described. Use the "
+            "language they used. Only include code actually discussed in the transcript.\n"
+            "- \"examples\": If the speaker gives a worked example, analogy, or concrete illustration "
+            "to explain a concept, capture it concisely. Only include examples actually given.\n"
+            "Return empty arrays for any of these if the transcript chunk does not contain them."
         ),
     }
     guidance = styles.get(normalized)
@@ -853,6 +911,66 @@ def _explanation_style_guidance(style: str) -> str:
     logger.warning("Unknown explanation style '%s'; falling back to %s", style, DEFAULT_EXPLANATION_STYLE)
     default_key = DEFAULT_EXPLANATION_STYLE.strip().lower().replace("-", "_")
     return styles.get(default_key, styles["well_explained"])
+
+
+def _is_educational(style: str) -> bool:
+    return (style or "").strip().lower().replace("-", "_") == "educational"
+
+
+def _educational_chunk_summary_schema() -> dict:
+    """Extended chunk summary schema with formulas, code_snippets, examples."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "chunk_summary_educational",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "heading": {"type": "string"},
+                    "main_idea": {"type": "string"},
+                    "key_points": {"type": "array", "items": {"type": "string"}},
+                    "keywords": {"type": "array", "items": {"type": "string"}},
+                    "transition": {"type": "string", "enum": ["continue", "shift", "conclusion"]},
+                    "formulas": {"type": "array", "items": {"type": "string"}},
+                    "code_snippets": {"type": "array", "items": {"type": "string"}},
+                    "examples": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "heading", "main_idea", "key_points", "keywords", "transition",
+                    "formulas", "code_snippets", "examples",
+                ],
+            },
+        },
+    }
+
+
+def _educational_section_schema() -> dict:
+    """Extended section schema with formulas, code_snippets, examples."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "note_section_educational",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "heading": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "key_points": {"type": "array", "items": {"type": "string"}},
+                    "formulas": {"type": "array", "items": {"type": "string"}},
+                    "code_snippets": {"type": "array", "items": {"type": "string"}},
+                    "examples": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "heading", "summary", "key_points",
+                    "formulas", "code_snippets", "examples",
+                ],
+            },
+        },
+    }
 
 
 def _summary_keywords(summary: ChunkSummary) -> set[str]:
@@ -892,6 +1010,7 @@ def _section_frames(
     vision_reranker: Optional[VisionReranker],
     keep: int = 2,
     max_candidates: int = 4,
+    explanation_style: str = DEFAULT_EXPLANATION_STYLE,
 ) -> list[Frame]:
     if not frame_set:
         return []
@@ -909,6 +1028,7 @@ def _section_frames(
                 key_points=key_points,
                 candidates=candidate_pairs,
                 keep=keep,
+                educational=_is_educational(explanation_style),
             )
             if ranked_ids:
                 id_to_frame = {candidate_id: frame for candidate_id, frame in zip((cid for cid, _ in candidate_pairs), candidates)}

@@ -166,6 +166,9 @@ def _render_section(
                 lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
             lines.append("")
 
+    # Educational artifacts — only rendered when present (educational mode)
+    lines.extend(_render_educational_artifacts(section))
+
     for subsection in section.subsections:
         lines.extend(
             _render_section(
@@ -177,6 +180,42 @@ def _render_section(
             )
         )
         lines.append("")
+
+    return lines
+
+
+def _render_educational_artifacts(section: NoteSection) -> list[str]:
+    """Render formulas, code snippets, and examples extracted from the transcript."""
+    lines: list[str] = []
+
+    if section.formulas:
+        lines.append("**Formulas:**")
+        lines.append("")
+        for formula in section.formulas:
+            # Render as a math block if it contains LaTeX, otherwise inline
+            if formula.startswith("$") or "\\" in formula:
+                lines.append(f"$$\n{formula.strip('$').strip()}\n$$")
+            else:
+                lines.append(f"- ${formula}$")
+        lines.append("")
+
+    if section.code_snippets:
+        lines.append("**Code:**")
+        lines.append("")
+        for snippet in section.code_snippets:
+            lines.append("```")
+            lines.append(snippet)
+            lines.append("```")
+            lines.append("")
+
+    if section.examples:
+        lines.append("**Example:**")
+        lines.append("")
+        for example in section.examples:
+            # Render as a blockquote for visual distinction
+            for line in example.split("\n"):
+                lines.append(f"> {line}")
+            lines.append("")
 
     return lines
 
