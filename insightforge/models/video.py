@@ -20,6 +20,7 @@ class VideoJob(BaseModel):
     output_dir: Path = Path("./output")
     config_path: Optional[Path] = None
     model_override: Optional[str] = None
+    verbose: bool = False
 
     @field_validator("mode")
     @classmethod

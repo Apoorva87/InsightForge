@@ -64,6 +64,15 @@ class TestFillGaps:
         result = _fill_gaps(segs, max_gap=2.0)
         assert result[0].end == 5.0  # unchanged
 
+    def test_sorts_out_of_order_segments_before_gap_fill(self):
+        segs = [
+            TranscriptSegment(start=6.0, end=10.0, text="Second"),
+            TranscriptSegment(start=0.0, end=5.0, text="First"),
+        ]
+        result = _fill_gaps(segs, max_gap=2.0)
+        assert [segment.text for segment in result] == ["First", "Second"]
+        assert result[0].end == 6.0
+
 
 class TestAlignmentRun:
     def test_is_aligned_flag_set(self, sample_transcript):

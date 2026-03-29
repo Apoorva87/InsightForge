@@ -51,6 +51,7 @@ def process(
         output_dir=output_dir,
         config_path=config,
         model_override=model,
+        verbose=verbose,
     )
 
     try:

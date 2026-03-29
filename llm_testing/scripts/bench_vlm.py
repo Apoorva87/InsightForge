@@ -48,6 +48,48 @@ SERVERS = {
     },
 }
 
+DEFAULT_TEXT_TIMEOUT = 45.0
+DEFAULT_VISION_TIMEOUT = 180.0
+DEFAULT_CONCURRENCY_LEVELS = [1, 2, 4, 6, 8]
+DEFAULT_BATCH_SIZES = [1, 2, 4, 6, 8, 10, 12]
+
+
+def parse_csv_ints(raw: str, default: list[int]) -> list[int]:
+    values = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            continue
+        if value > 0:
+            values.append(value)
+    return values or default
+
+
+def enrich_concurrency_results(results: list[dict]) -> list[dict]:
+    baseline = next(
+        (r for r in results if r.get("status") == "OK" and r.get("concurrency") == 1 and r.get("throughput_rps", 0) > 0),
+        None,
+    )
+    if not baseline:
+        return results
+
+    baseline_tput = baseline["throughput_rps"]
+    baseline_lat = baseline["avg_latency_ms"]
+    for result in results:
+        if result.get("status") != "OK":
+            continue
+        speedup = result["throughput_rps"] / baseline_tput if baseline_tput else 0.0
+        efficiency = (speedup / result["concurrency"] * 100.0) if result["concurrency"] else 0.0
+        latency_mult = (result["avg_latency_ms"] / baseline_lat) if baseline_lat else 0.0
+        result["speedup_vs_1x"] = round(speedup, 2)
+        result["scaling_efficiency_pct"] = round(efficiency, 1)
+        result["latency_vs_1x"] = round(latency_mult, 2)
+    return results
+
 
 def check_server(base_url: str, api_key: str) -> Optional[list[str]]:
     """Check if server is reachable and return available models."""
@@ -84,7 +126,7 @@ def find_test_frames(n: int = 12) -> list[Path]:
 # Test: Endpoint compatibility
 # ---------------------------------------------------------------------------
 
-def test_endpoint_compatibility(base_url: str, api_key: str, model: str) -> dict:
+def test_endpoint_compatibility(base_url: str, api_key: str, model: str, text_timeout: float, vision_timeout: float) -> dict:
     """Test that the server supports the exact endpoints InsightForge uses.
 
     InsightForge VLM endpoints:
@@ -114,7 +156,7 @@ def test_endpoint_compatibility(base_url: str, api_key: str, model: str) -> dict
             messages=[{"role": "user", "content": "Reply with only: OK"}],
             max_tokens=10,
             temperature=0.0,
-            timeout=30,
+            timeout=text_timeout,
         )
         elapsed = (time.monotonic() - start) * 1000
         text = r.choices[0].message.content or ""
@@ -140,7 +182,7 @@ def test_endpoint_compatibility(base_url: str, api_key: str, model: str) -> dict
                 messages=[{"role": "user", "content": content}],
                 max_tokens=100,
                 temperature=0.0,
-                timeout=60,
+                timeout=vision_timeout,
             )
             elapsed = (time.monotonic() - start) * 1000
             text = r.choices[0].message.content or ""
@@ -170,6 +212,7 @@ def test_batch_scaling(
     model: str,
     batch_sizes: list[int],
     frames: list[Path],
+    vision_timeout: float,
 ) -> list[dict]:
     """Test how per-frame cost changes with batch size."""
     import openai
@@ -203,7 +246,7 @@ def test_batch_scaling(
                 messages=[{"role": "user", "content": content}],
                 max_tokens=150 * n,
                 temperature=0.0,
-                timeout=120,
+                timeout=vision_timeout,
             )
             elapsed = (time.monotonic() - start) * 1000
             tokens = r.usage.completion_tokens if r.usage else 0
@@ -235,21 +278,22 @@ def test_concurrency_scaling(
     api_key: str,
     model: str,
     concurrency_levels: list[int],
+    text_timeout: float,
 ) -> list[dict]:
     """Test throughput at different concurrency levels (text-only for speed)."""
     import openai
 
-    client = openai.OpenAI(api_key=api_key, base_url=base_url)
     results = []
 
     def single_request(_label: str) -> float:
         start = time.monotonic()
+        client = openai.OpenAI(api_key=api_key, base_url=base_url)
         client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "Reply with only: OK"}],
             max_tokens=10,
             temperature=0.0,
-            timeout=30,
+            timeout=text_timeout,
         )
         return (time.monotonic() - start) * 1000
 
@@ -273,7 +317,7 @@ def test_concurrency_scaling(
                 "error": str(exc)[:200],
             })
 
-    return results
+    return enrich_concurrency_results(results)
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +343,9 @@ def select_servers() -> list[dict]:
         return []
 
     print(f"\n  {len(available)} server(s) available.")
-    choice = input("  Test which? (all / comma-separated keys / Enter=all): ").strip().lower()
+    print("  Enter one or more server keys such as: lmstudio,mlx")
+    print("  Use Enter or 'all' to test every reachable server.")
+    choice = input("  Test which servers? ").strip().lower()
 
     if not choice or choice == "all":
         return available
@@ -322,7 +368,9 @@ def select_model(server: dict) -> str:
         default_marker = " (default)" if m == server["default_model"] else ""
         print(f"    [{i+1}] {m}{default_marker}")
 
-    choice = input(f"  Select model (1-{len(models)} / Enter=default): ").strip()
+    print("  Pick the model number to benchmark.")
+    print("  Use Enter to keep the configured default if the server exposes it.")
+    choice = input(f"  Select model (1-{len(models)}): ").strip()
     if not choice:
         # Use default if available, otherwise first
         return server["default_model"] if server["default_model"] in models else models[0]
@@ -344,7 +392,9 @@ def select_tests() -> list[str]:
     for i, (key, desc) in enumerate(all_tests):
         print(f"  [{i+1}] {key:14s} {desc}")
 
-    choice = input(f"\n  Run which? (all / comma-separated numbers / Enter=all): ").strip().lower()
+    print("\n  Examples: '1,2' runs endpoint checks and batch scaling.")
+    print("  Use Enter or 'all' to run every test.")
+    choice = input("  Run which tests? ").strip().lower()
     if not choice or choice == "all":
         return [k for k, _ in all_tests]
 
@@ -397,13 +447,15 @@ def print_batch_results(server_name: str, model: str, results: list[dict]) -> No
 
 def print_concurrency_results(server_name: str, model: str, results: list[dict]) -> None:
     print(f"\n  --- {server_name} ({model}): Concurrency Scaling ---")
-    print(f"    {'Conc':>4s}  {'Wall':>8s}  {'Avg Lat':>9s}  {'Throughput':>11s}  {'Status'}")
-    print(f"    {'----':>4s}  {'--------':>8s}  {'---------':>9s}  {'-----------':>11s}  {'------'}")
+    print("    Scaling efficiency = throughput speedup divided by concurrency.")
+    print(f"    {'Conc':>4s}  {'Wall':>8s}  {'Avg Lat':>9s}  {'Throughput':>11s}  {'Speedup':>7s}  {'Eff.':>6s}  {'Lat x1':>7s}  {'Status'}")
+    print(f"    {'----':>4s}  {'--------':>8s}  {'---------':>9s}  {'-----------':>11s}  {'-------':>7s}  {'------':>6s}  {'-------':>7s}  {'------'}")
     for r in results:
         if r["status"] == "OK":
             print(
                 f"    {r['concurrency']:4d}  {r['wall_ms']:7d}ms  {r['avg_latency_ms']:8d}ms  "
-                f"{r['throughput_rps']:9.1f} r/s  OK"
+                f"{r['throughput_rps']:9.1f} r/s  {r.get('speedup_vs_1x', 0):6.2f}x  "
+                f"{r.get('scaling_efficiency_pct', 0):5.1f}%  {r.get('latency_vs_1x', 0):6.2f}x  OK"
             )
         else:
             print(f"    {r['concurrency']:4d}  {'':>8s}  {'':>9s}  {'':>11s}  FAIL: {r.get('error', '')[:60]}")
@@ -416,11 +468,41 @@ def print_concurrency_results(server_name: str, model: str, results: list[dict])
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark VLM servers for InsightForge")
     parser.add_argument("--non-interactive", action="store_true", help="Run all tests on all available servers")
+    parser.add_argument(
+        "--text-timeout",
+        type=float,
+        default=DEFAULT_TEXT_TIMEOUT,
+        help="Timeout in seconds for text-only VLM checks and concurrency requests",
+    )
+    parser.add_argument(
+        "--vision-timeout",
+        type=float,
+        default=DEFAULT_VISION_TIMEOUT,
+        help="Timeout in seconds for image and batch-size tests",
+    )
+    parser.add_argument(
+        "--concurrency-levels",
+        type=str,
+        default="1,2,4,6,8",
+        help="Comma-separated concurrency levels to test",
+    )
+    parser.add_argument(
+        "--batch-sizes",
+        type=str,
+        default="1,2,4,6,8,10,12",
+        help="Comma-separated image batch sizes to test",
+    )
     args = parser.parse_args()
+    concurrency_levels = parse_csv_ints(args.concurrency_levels, DEFAULT_CONCURRENCY_LEVELS)
+    batch_sizes = parse_csv_ints(args.batch_sizes, DEFAULT_BATCH_SIZES)
 
     print("=" * 60)
     print("  InsightForge VLM Benchmark")
     print("=" * 60)
+    print(f"  Text timeout:         {args.text_timeout}s")
+    print(f"  Vision timeout:       {args.vision_timeout}s")
+    print(f"  Concurrency levels:   {', '.join(str(n) for n in concurrency_levels)}")
+    print(f"  Batch sizes:          {', '.join(str(n) for n in batch_sizes)}")
 
     if args.non_interactive:
         servers = []
@@ -452,15 +534,18 @@ def main() -> None:
         print(f"{'=' * 60}")
 
         if "endpoints" in tests:
-            results = test_endpoint_compatibility(server["base_url"], server["api_key"], model)
+            results = test_endpoint_compatibility(
+                server["base_url"], server["api_key"], model, args.text_timeout, args.vision_timeout,
+            )
             print_endpoint_results(server["name"], results)
 
         if "batch" in tests:
             if frames:
                 results = test_batch_scaling(
                     server["base_url"], server["api_key"], model,
-                    batch_sizes=[1, 2, 4, 6, 8, 10, 12],
+                    batch_sizes=batch_sizes,
                     frames=frames,
+                    vision_timeout=args.vision_timeout,
                 )
                 print_batch_results(server["name"], model, results)
             else:
@@ -469,7 +554,8 @@ def main() -> None:
         if "concurrency" in tests:
             results = test_concurrency_scaling(
                 server["base_url"], server["api_key"], model,
-                concurrency_levels=[1, 2, 4, 6, 8],
+                concurrency_levels=concurrency_levels,
+                text_timeout=args.text_timeout,
             )
             print_concurrency_results(server["name"], model, results)
 

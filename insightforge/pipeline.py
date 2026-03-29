@@ -377,8 +377,11 @@ def _build_audio_text(
 
 def _configure_logging(config: dict) -> None:
     log_cfg = config.get("logging", {})
+    level = log_cfg.get("level", "INFO")
+    if config.get("_runtime", {}).get("verbose"):
+        level = "DEBUG"
     setup_logging(
-        level=log_cfg.get("level", "INFO"),
+        level=level,
         format=log_cfg.get("format", "text"),
     )
 
@@ -534,10 +537,13 @@ def _apply_job_overrides(config: dict, job: VideoJob) -> dict:
     config = {**config}
     llm_cfg = {**config.get("llm", {})}
     output_cfg = {**config.get("output", {})}
+    runtime_cfg = {**config.get("_runtime", {})}
     config["llm"] = llm_cfg
     config["output"] = output_cfg
+    config["_runtime"] = runtime_cfg
 
     llm_cfg["mode"] = job.mode
+    runtime_cfg["verbose"] = bool(job.verbose)
     if job.html_enabled:
         output_cfg["html_viewer"] = True
 

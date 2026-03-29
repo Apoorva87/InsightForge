@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from insightforge.models.frame import Frame
 from insightforge.models.output import NoteSection
-from insightforge.stages.formatter import _heading_to_anchor, _render_header, run
+from insightforge.stages.formatter import (
+    _build_transcript_blocks_for_range,
+    _heading_to_anchor,
+    _render_header,
+    run,
+)
 
 
 class TestFormatterRun:
@@ -160,6 +168,43 @@ class TestFormatterRun:
         assert "Parent summary." in output.transcript_md_content
         assert "### Child Section" in output.transcript_md_content
         assert "Hello and welcome to this tutorial." in output.transcript_md_content
+
+    def test_skips_missing_frame_paths_in_markdown(self, sample_note_section, sample_video_metadata, tmp_path):
+        missing = Frame(
+            frame_id="frame_missing",
+            timestamp=6.0,
+            path=tmp_path / "missing.jpg",
+            description="Missing frame",
+        )
+        section = sample_note_section.model_copy(update={"frames": [missing]})
+
+        output = run(sections=[section], metadata=sample_video_metadata, frames_dir=tmp_path)
+
+        assert "missing.jpg" not in output.markdown_content
+
+
+class TestTranscriptBlockOrdering:
+    def test_uses_section_id_as_tiebreaker_for_equal_timestamps(self):
+        later_id = NoteSection(
+            section_id="section_0002",
+            chunk_id="chunk_0002",
+            timestamp_start=0.0,
+            timestamp_end=10.0,
+            heading="Later ID",
+            summary="Summary",
+        )
+        earlier_id = NoteSection(
+            section_id="section_0001",
+            chunk_id="chunk_0001",
+            timestamp_start=0.0,
+            timestamp_end=10.0,
+            heading="Earlier ID",
+            summary="Summary",
+        )
+
+        blocks = _build_transcript_blocks_for_range([later_id, earlier_id], 0.0, 10.0)
+
+        assert blocks[0]["section"].section_id == "section_0001"
 
 
 class TestHeadingToAnchor:

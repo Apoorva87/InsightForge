@@ -22,6 +22,7 @@ ENV/
 
 # Output & work directories
 output/
+new-output/
 work/
 *.mp4
 *.webm

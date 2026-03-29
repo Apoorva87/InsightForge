@@ -58,7 +58,9 @@ def main() -> None:
             print(f"    [{i+1}] {bench['name']}")
             print(f"        {bench['description']}\n")
 
-        choice = input("  Run which? (all / comma-separated numbers / Enter=all): ").strip().lower()
+        print("  Enter benchmark numbers like '1,3' or use 'all'.")
+        print("  Press Enter to run the full suite.")
+        choice = input("  Run which benchmarks? ").strip().lower()
         if not choice or choice == "all":
             selected = BENCHMARKS
         else:

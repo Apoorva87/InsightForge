@@ -90,7 +90,7 @@ def _fill_gaps(
     if len(segments) < 2:
         return segments
 
-    result = list(segments)
+    result = sorted(segments, key=lambda s: (s.start, s.end, s.text))
     for i in range(len(result) - 1):
         gap = result[i + 1].start - result[i].end
         if 0 < gap <= max_gap:

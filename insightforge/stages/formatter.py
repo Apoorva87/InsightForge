@@ -163,7 +163,8 @@ def _render_section(
             sorted_frames = sorted(section.frames, key=lambda f: f.timestamp)
             for frame in sorted_frames:
                 rel_path = _frame_rel_path(frame, frames_dir)
-                lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
+                if rel_path:
+                    lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
             lines.append("")
 
     # Educational artifacts — only rendered when present (educational mode)
@@ -258,10 +259,11 @@ def _interleave_frames_with_points(
             lines.append("")
             for frame in sorted(matched, key=lambda f: f.timestamp):
                 rel_path = _frame_rel_path(frame, frames_dir)
-                caption = frame.description or f"Frame at {frame.timestamp_str}"
-                lines.append(f"  ![{caption}]({rel_path})")
-                if frame.ocr_text:
-                    lines.extend(_render_ocr_text_md(frame.ocr_text))
+                if rel_path:
+                    caption = frame.description or f"Frame at {frame.timestamp_str}"
+                    lines.append(f"  ![{caption}]({rel_path})")
+                    if frame.ocr_text:
+                        lines.extend(_render_ocr_text_md(frame.ocr_text))
             lines.append("")
 
     # Append unmatched frames at end
@@ -269,10 +271,11 @@ def _interleave_frames_with_points(
         lines.append("")
         for frame in sorted(unmatched, key=lambda f: f.timestamp):
             rel_path = _frame_rel_path(frame, frames_dir)
-            caption = frame.description or f"Frame at {frame.timestamp_str}"
-            lines.append(f"![{caption}]({rel_path})")
-            if frame.ocr_text:
-                lines.extend(_render_ocr_text_md(frame.ocr_text))
+            if rel_path:
+                caption = frame.description or f"Frame at {frame.timestamp_str}"
+                lines.append(f"![{caption}]({rel_path})")
+                if frame.ocr_text:
+                    lines.extend(_render_ocr_text_md(frame.ocr_text))
         lines.append("")
 
     if lines and lines[-1] != "":
@@ -406,7 +409,10 @@ def _build_transcript_blocks_for_range(
     range_end: float,
 ) -> list[dict[str, object]]:
     """Build non-overlapping blocks for a time range, preserving section hierarchy."""
-    sorted_sections = sorted(sections, key=lambda s: (s.timestamp_start, s.timestamp_end))
+    sorted_sections = sorted(
+        sections,
+        key=lambda s: (s.timestamp_start, s.timestamp_end, s.section_id),
+    )
 
     blocks: list[dict[str, object]] = []
     cursor = range_start
@@ -418,6 +424,8 @@ def _build_transcript_blocks_for_range(
             if index + 1 < len(sorted_sections)
             else range_end
         )
+        if next_start <= section_start:
+            next_start = range_end
         section_end = min(section.timestamp_end, next_start, range_end)
 
         if cursor < section_start:
@@ -583,8 +591,9 @@ def _render_leaf_transcript_block(
             frame = sorted_frames[frame_idx]
             if frame.timestamp <= blurb_end + 1.5:
                 rel_path = _frame_rel_path(frame, frames_dir)
-                lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
-                lines.append("")
+                if rel_path:
+                    lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
+                    lines.append("")
                 frame_idx += 1
             else:
                 break
@@ -592,8 +601,9 @@ def _render_leaf_transcript_block(
     while frame_idx < len(sorted_frames):
         frame = sorted_frames[frame_idx]
         rel_path = _frame_rel_path(frame, frames_dir)
-        lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
-        lines.append("")
+        if rel_path:
+            lines.append(f"![Frame at {frame.timestamp_str}]({rel_path})")
+            lines.append("")
         frame_idx += 1
 
     return lines
@@ -637,8 +647,11 @@ def _split_segments_into_blurbs(
 # ---------- Helpers ----------
 
 
-def _frame_rel_path(frame: Frame, frames_dir: Optional[Path]) -> str:
+def _frame_rel_path(frame: Frame, frames_dir: Optional[Path]) -> Optional[str]:
     """Return the relative path string for a frame image."""
+    if not frame.path.exists():
+        logger.warning("Skipping missing frame reference: %s", frame.path)
+        return None
     if frames_dir is not None:
         return str(Path("frames") / frame.path.name)
     return str(frame.path)

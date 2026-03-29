@@ -51,8 +51,11 @@ def _get_token_counter():
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
         return lambda text: len(enc.encode(text))
-    except ImportError:
-        logger.debug("tiktoken not available; falling back to word-based token estimate")
+    except Exception as exc:
+        logger.debug(
+            "Falling back to word-based token estimate because tiktoken is unavailable or not initialized: %s",
+            exc,
+        )
         return lambda text: len(text.split())
 
 

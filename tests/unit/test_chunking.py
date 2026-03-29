@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+from unittest.mock import Mock
+
 import pytest
 
-from insightforge.models.transcript import TranscriptResult, TranscriptSegment
-from insightforge.stages.chunking import run, _trim_overlap, _make_chunk
+from insightforge.models.transcript import TranscriptSegment
+from insightforge.stages.chunking import _get_token_counter, _make_chunk, _trim_overlap, run
 
 
 class TestChunkingRun:
@@ -49,3 +52,13 @@ class TestTrimOverlap:
         result = _trim_overlap(sample_segments, overlap_tokens=10, encode=encode)
         assert len(result) <= len(sample_segments)
         assert all(s in sample_segments for s in result)
+
+
+def test_get_token_counter_falls_back_when_tiktoken_init_fails(monkeypatch) -> None:
+    mock_tiktoken = Mock()
+    mock_tiktoken.get_encoding.side_effect = RuntimeError("offline cache miss")
+    monkeypatch.setitem(sys.modules, "tiktoken", mock_tiktoken)
+
+    encode = _get_token_counter()
+
+    assert encode("one two three") == 3

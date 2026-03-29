@@ -11,6 +11,7 @@ from insightforge.models.scoring import ScoredChunk
 from insightforge.models.frame import Frame, FrameSet
 from insightforge.stages.importance import (
     _compute_visual_scores,
+    _parse_score,
     apply_visual_scores,
     filter_by_detail,
     run,
@@ -90,3 +91,22 @@ class TestApplyVisualScores:
 
         assert updated[0].visual_score == pytest.approx(0.75)
         assert updated[0].composite_score > scored[0].llm_score * 0.7
+
+
+class TestParseScore:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("0.8", 0.8),
+            ('{"score": 0.25}', 0.25),
+            ("'0.6'", 0.6),
+            ("Score: 0.75", 0.75),
+            ("importance = 7", 0.7),
+            ("Rating: 9/10", 0.9),
+            ("The score is 0.42 overall.", 0.42),
+            ("", 0.5),
+            ("not a score", 0.5),
+        ],
+    )
+    def test_parse_score_handles_expected_formats(self, text, expected):
+        assert _parse_score(text) == pytest.approx(expected)

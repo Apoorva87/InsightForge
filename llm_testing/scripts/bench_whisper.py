@@ -211,7 +211,9 @@ def select_models() -> list[str]:
     for i, (name, info) in enumerate(model_list):
         print(f"  [{i+1}] {name:22s} {info['description']}")
 
-    choice = input(f"\n  Test which? (all / comma-separated numbers / Enter=default): ").strip().lower()
+    print("\n  Enter model numbers like '4,5' or use 'all'.")
+    print("  Press Enter to benchmark the InsightForge default: distil-medium.en")
+    choice = input("  Test which models? ").strip().lower()
 
     if choice == "all":
         return [name for name, _ in model_list]
@@ -238,7 +240,8 @@ def select_tests() -> list[str]:
     for i, (key, desc) in enumerate(all_tests):
         print(f"  [{i+1}] {key:16s} {desc}")
 
-    choice = input(f"\n  Run which? (all / comma-separated numbers / Enter=all): ").strip().lower()
+    print("\n  Use Enter or 'all' to run every Whisper test.")
+    choice = input("  Run which tests? ").strip().lower()
     if not choice or choice == "all":
         return [k for k, _ in all_tests]
     selected = []
@@ -251,7 +254,8 @@ def select_tests() -> list[str]:
 
 
 def select_duration() -> float:
-    choice = input("\n  Audio duration to test (seconds, Enter=60): ").strip()
+    print("\n  This limits how much audio is processed during the benchmark.")
+    choice = input("  Audio duration to test in seconds (Enter=60): ").strip()
     if not choice:
         return 60.0
     try:

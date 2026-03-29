@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 from insightforge.models.output import NoteSection
-from insightforge.pipeline import _build_audio_text, _leaf_sections
+from insightforge.pipeline import _build_audio_text, _configure_logging, _leaf_sections
 
 
 def _make_section(sid: str, *, subsections: list[NoteSection] | None = None) -> NoteSection:
@@ -73,3 +75,15 @@ class TestBuildAudioText:
         result = _build_audio_text(0.5, "", sections, None)
         assert "Overview" not in result
         assert "Heading s0" in result
+
+
+def test_configure_logging_uses_debug_when_runtime_verbose(monkeypatch) -> None:
+    mock_setup = Mock()
+    monkeypatch.setattr("insightforge.pipeline.setup_logging", mock_setup)
+
+    _configure_logging({
+        "logging": {"level": "INFO", "format": "text"},
+        "_runtime": {"verbose": True},
+    })
+
+    mock_setup.assert_called_once_with(level="DEBUG", format="text")

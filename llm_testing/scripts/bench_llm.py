@@ -81,6 +81,47 @@ PROMPTS = {
     },
 }
 
+DEFAULT_SIMPLE_TIMEOUT = 30.0
+DEFAULT_PROMPT_TIMEOUT = 180.0
+DEFAULT_CONCURRENCY_LEVELS = [1, 2, 4, 6, 8]
+
+
+def parse_csv_ints(raw: str, default: list[int]) -> list[int]:
+    values = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            continue
+        if value > 0:
+            values.append(value)
+    return values or default
+
+
+def enrich_concurrency_results(results: list[dict]) -> list[dict]:
+    baseline = next(
+        (r for r in results if r.get("status") == "OK" and r.get("concurrency") == 1 and r.get("throughput_rps", 0) > 0),
+        None,
+    )
+    if not baseline:
+        return results
+
+    baseline_tput = baseline["throughput_rps"]
+    baseline_lat = baseline["avg_latency_ms"]
+    for result in results:
+        if result.get("status") != "OK":
+            continue
+        speedup = result["throughput_rps"] / baseline_tput if baseline_tput else 0.0
+        efficiency = (speedup / result["concurrency"] * 100.0) if result["concurrency"] else 0.0
+        latency_mult = (result["avg_latency_ms"] / baseline_lat) if baseline_lat else 0.0
+        result["speedup_vs_1x"] = round(speedup, 2)
+        result["scaling_efficiency_pct"] = round(efficiency, 1)
+        result["latency_vs_1x"] = round(latency_mult, 2)
+    return results
+
 
 def check_server_ollama(base_url: str) -> Optional[list[str]]:
     """Check Ollama server availability and return model list."""
@@ -107,14 +148,14 @@ def check_server_openai(base_url: str, api_key: str) -> Optional[list[str]]:
 # Ollama endpoint tests
 # ---------------------------------------------------------------------------
 
-def test_ollama_endpoints(base_url: str, model: str) -> dict:
+def test_ollama_endpoints(base_url: str, model: str, request_timeout: float) -> dict:
     """Test Ollama-specific endpoints that InsightForge uses."""
     results = {}
 
     # GET /api/tags (used by OllamaProvider.is_available and cli.py check)
     try:
         start = time.monotonic()
-        r = httpx.get(f"{base_url}/api/tags", timeout=5.0)
+        r = httpx.get(f"{base_url}/api/tags", timeout=request_timeout)
         r.raise_for_status()
         elapsed = (time.monotonic() - start) * 1000
         models = [m["name"] for m in r.json().get("models", [])]
@@ -135,7 +176,7 @@ def test_ollama_endpoints(base_url: str, model: str) -> dict:
             "options": {"temperature": 0.0, "num_predict": 10},
         }
         start = time.monotonic()
-        r = httpx.post(f"{base_url}/api/generate", json=payload, timeout=30.0)
+        r = httpx.post(f"{base_url}/api/generate", json=payload, timeout=request_timeout)
         r.raise_for_status()
         elapsed = (time.monotonic() - start) * 1000
         data = r.json()
@@ -156,7 +197,7 @@ def test_ollama_endpoints(base_url: str, model: str) -> dict:
     return results
 
 
-def test_openai_endpoints(base_url: str, api_key: str, model: str) -> dict:
+def test_openai_endpoints(base_url: str, api_key: str, model: str, request_timeout: float) -> dict:
     """Test OpenAI-compatible endpoints that InsightForge uses."""
     import openai
 
@@ -184,7 +225,7 @@ def test_openai_endpoints(base_url: str, api_key: str, model: str) -> dict:
             messages=[{"role": "user", "content": "Reply with only: OK"}],
             max_tokens=10,
             temperature=0.0,
-            timeout=30,
+            timeout=request_timeout,
         )
         elapsed = (time.monotonic() - start) * 1000
         text = r.choices[0].message.content or ""
@@ -203,7 +244,7 @@ def test_openai_endpoints(base_url: str, api_key: str, model: str) -> dict:
 # Prompt benchmarks
 # ---------------------------------------------------------------------------
 
-def bench_ollama_prompt(base_url: str, model: str, prompt_cfg: dict) -> dict:
+def bench_ollama_prompt(base_url: str, model: str, prompt_cfg: dict, prompt_timeout: float) -> dict:
     """Benchmark a realistic InsightForge prompt via Ollama."""
     prompt = prompt_cfg["prompt"]
     if prompt_cfg.get("system"):
@@ -221,7 +262,7 @@ def bench_ollama_prompt(base_url: str, model: str, prompt_cfg: dict) -> dict:
 
     start = time.monotonic()
     try:
-        r = httpx.post(f"{base_url}/api/generate", json=payload, timeout=120.0)
+        r = httpx.post(f"{base_url}/api/generate", json=payload, timeout=prompt_timeout)
         r.raise_for_status()
         elapsed = (time.monotonic() - start) * 1000
         data = r.json()
@@ -249,7 +290,7 @@ def bench_ollama_prompt(base_url: str, model: str, prompt_cfg: dict) -> dict:
         return {"status": "FAIL", "latency_ms": round(elapsed), "error": str(exc)[:200]}
 
 
-def bench_openai_prompt(base_url: str, api_key: str, model: str, prompt_cfg: dict) -> dict:
+def bench_openai_prompt(base_url: str, api_key: str, model: str, prompt_cfg: dict, prompt_timeout: float) -> dict:
     """Benchmark a realistic InsightForge prompt via OpenAI-compatible endpoint."""
     import openai
 
@@ -266,7 +307,7 @@ def bench_openai_prompt(base_url: str, api_key: str, model: str, prompt_cfg: dic
             messages=messages,
             max_tokens=prompt_cfg["max_tokens"],
             temperature=0.0,
-            timeout=120,
+            timeout=prompt_timeout,
         )
         elapsed = (time.monotonic() - start) * 1000
         text = r.choices[0].message.content or ""
@@ -302,6 +343,7 @@ def test_concurrency(
     api_type: str,
     model: str,
     levels: list[int],
+    request_timeout: float,
 ) -> list[dict]:
     """Test throughput at different concurrency levels."""
     results = []
@@ -313,7 +355,7 @@ def test_concurrency(
                 f"{base_url}/api/generate",
                 json={"model": model, "prompt": "Reply: OK", "stream": False,
                       "options": {"num_predict": 10, "temperature": 0.0}},
-                timeout=30.0,
+                timeout=request_timeout,
             )
             r.raise_for_status()
         else:
@@ -322,7 +364,7 @@ def test_concurrency(
             client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": "Reply: OK"}],
-                max_tokens=10, temperature=0.0, timeout=30,
+                max_tokens=10, temperature=0.0, timeout=request_timeout,
             )
         return (time.monotonic() - start) * 1000
 
@@ -342,7 +384,7 @@ def test_concurrency(
         except Exception as exc:
             results.append({"concurrency": n, "status": "FAIL", "error": str(exc)[:200]})
 
-    return results
+    return enrich_concurrency_results(results)
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +412,9 @@ def select_servers() -> list[dict]:
         return []
 
     print(f"\n  {len(available)} server(s) available.")
-    choice = input("  Test which? (all / comma-separated keys / Enter=all): ").strip().lower()
+    print("  Enter one or more server keys such as: ollama,lmstudio")
+    print("  Use Enter or 'all' to run every reachable server.")
+    choice = input("  Test which servers? ").strip().lower()
     if not choice or choice == "all":
         return available
     keys = [k.strip() for k in choice.split(",")]
@@ -387,7 +431,9 @@ def select_model(server: dict) -> str:
         default = " (default)" if m == server["default_model"] else ""
         print(f"    [{i+1}] {m}{default}")
 
-    choice = input(f"  Select model (1-{len(models)} / Enter=default): ").strip()
+    print("  Pick the number for the exact model to benchmark.")
+    print("  Use Enter to take the configured default if it exists on the server.")
+    choice = input(f"  Select model (1-{len(models)}): ").strip()
     if not choice:
         return server["default_model"] if server["default_model"] in models else models[0]
     try:
@@ -406,7 +452,9 @@ def select_tests() -> list[str]:
     for i, (key, desc) in enumerate(all_tests):
         print(f"  [{i+1}] {key:14s} {desc}")
 
-    choice = input(f"\n  Run which? (all / comma-separated numbers / Enter=all): ").strip().lower()
+    print("\n  Examples: '1,3' runs endpoint checks plus concurrency only.")
+    print("  Use Enter or 'all' to run every test.")
+    choice = input("  Run which tests? ").strip().lower()
     if not choice or choice == "all":
         return [k for k, _ in all_tests]
     selected = []
@@ -449,11 +497,16 @@ def print_prompt_results(name: str, model: str, prompt_name: str, result: dict) 
 
 def print_concurrency_results(name: str, results: list[dict]) -> None:
     print(f"\n  --- {name}: Concurrency Scaling ---")
-    print(f"    {'Conc':>4s}  {'Wall':>8s}  {'Avg Lat':>9s}  {'Throughput':>11s}")
-    print(f"    {'----':>4s}  {'--------':>8s}  {'---------':>9s}  {'-----------':>11s}")
+    print("    Scaling efficiency = throughput speedup divided by concurrency.")
+    print(f"    {'Conc':>4s}  {'Wall':>8s}  {'Avg Lat':>9s}  {'Throughput':>11s}  {'Speedup':>7s}  {'Eff.':>6s}  {'Lat x1':>7s}")
+    print(f"    {'----':>4s}  {'--------':>8s}  {'---------':>9s}  {'-----------':>11s}  {'-------':>7s}  {'------':>6s}  {'-------':>7s}")
     for r in results:
         if r["status"] == "OK":
-            print(f"    {r['concurrency']:4d}  {r['wall_ms']:7d}ms  {r['avg_latency_ms']:8d}ms  {r['throughput_rps']:9.1f} r/s")
+            print(
+                f"    {r['concurrency']:4d}  {r['wall_ms']:7d}ms  {r['avg_latency_ms']:8d}ms  "
+                f"{r['throughput_rps']:9.1f} r/s  {r.get('speedup_vs_1x', 0):6.2f}x  "
+                f"{r.get('scaling_efficiency_pct', 0):5.1f}%  {r.get('latency_vs_1x', 0):6.2f}x"
+            )
         else:
             print(f"    {r['concurrency']:4d}  FAIL: {r.get('error', '')[:60]}")
 
@@ -465,11 +518,33 @@ def print_concurrency_results(name: str, results: list[dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark LLM text servers for InsightForge")
     parser.add_argument("--non-interactive", action="store_true")
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=DEFAULT_SIMPLE_TIMEOUT,
+        help="Timeout in seconds for endpoint and concurrency requests",
+    )
+    parser.add_argument(
+        "--prompt-timeout",
+        type=float,
+        default=DEFAULT_PROMPT_TIMEOUT,
+        help="Timeout in seconds for realistic prompt benchmarks",
+    )
+    parser.add_argument(
+        "--concurrency-levels",
+        type=str,
+        default="1,2,4,6,8",
+        help="Comma-separated concurrency levels to test",
+    )
     args = parser.parse_args()
+    concurrency_levels = parse_csv_ints(args.concurrency_levels, DEFAULT_CONCURRENCY_LEVELS)
 
     print("=" * 60)
     print("  InsightForge LLM Text Benchmark")
     print("=" * 60)
+    print(f"  Request timeout:      {args.request_timeout}s")
+    print(f"  Prompt timeout:       {args.prompt_timeout}s")
+    print(f"  Concurrency levels:   {', '.join(str(n) for n in concurrency_levels)}")
 
     if args.non_interactive:
         servers = []
@@ -500,23 +575,23 @@ def main() -> None:
 
         if "endpoints" in tests:
             if server["api_type"] == "ollama":
-                results = test_ollama_endpoints(server["base_url"], model)
+                results = test_ollama_endpoints(server["base_url"], model, args.request_timeout)
             else:
-                results = test_openai_endpoints(server["base_url"], server.get("api_key", ""), model)
+                results = test_openai_endpoints(server["base_url"], server.get("api_key", ""), model, args.request_timeout)
             print_endpoint_results(server["name"], results)
 
         if "prompts" in tests:
             for prompt_name, prompt_cfg in PROMPTS.items():
                 if server["api_type"] == "ollama":
-                    result = bench_ollama_prompt(server["base_url"], model, prompt_cfg)
+                    result = bench_ollama_prompt(server["base_url"], model, prompt_cfg, args.prompt_timeout)
                 else:
-                    result = bench_openai_prompt(server["base_url"], server.get("api_key", ""), model, prompt_cfg)
+                    result = bench_openai_prompt(server["base_url"], server.get("api_key", ""), model, prompt_cfg, args.prompt_timeout)
                 print_prompt_results(server["name"], model, prompt_name, result)
 
         if "concurrency" in tests:
             results = test_concurrency(
                 server["base_url"], server.get("api_key"), server["api_type"],
-                model, levels=[1, 2, 4, 6, 8],
+                model, levels=concurrency_levels, request_timeout=args.request_timeout,
             )
             print_concurrency_results(server["name"], results)
 
